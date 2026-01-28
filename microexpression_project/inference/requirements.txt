@@ -1,0 +1,24 @@
+# Core dependencies for micro-expression inference
+torch>=1.9.0
+torchvision>=0.10.0
+numpy>=1.21.0
+opencv-python>=4.5.0
+scikit-learn>=1.0.0
+pandas>=1.3.0
+
+# Optional: for GPU support
+# torch-audio  # Uncomment if using audio features
+# onnxruntime  # Uncomment for ONNX deployment
+
+# Optional: for web deployment
+# flask>=2.0.0
+# fastapi>=0.68.0
+# uvicorn>=0.15.0
+
+# Optional: for advanced face detection
+# mtcnn>=0.1.0
+# facenet-pytorch>=2.5.0
+
+# Development and testing
+pytest>=6.0.0
+jupyter>=1.0.0

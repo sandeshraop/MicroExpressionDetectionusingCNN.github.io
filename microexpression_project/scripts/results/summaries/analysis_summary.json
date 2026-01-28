@@ -1,0 +1,13 @@
+{
+  "total_analyses": 1,
+  "emotion_distribution": {
+    "Happiness": 1
+  },
+  "average_confidence": 0.75,
+  "average_processing_time": 1.5,
+  "date_range": {
+    "first": "2026-01-27T20:58:54.559603",
+    "last": "2026-01-27T20:58:54.559603"
+  },
+  "generated_at": "2026-01-27T20:58:54.578239"
+}

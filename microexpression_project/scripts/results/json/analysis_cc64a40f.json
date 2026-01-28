@@ -1,0 +1,29 @@
+{
+  "analysis_id": "cc64a40f",
+  "timestamp": "2026-01-27T20:58:54.559603",
+  "video_info": {
+    "filename": "test_video.avi",
+    "file_size_mb": 5.2,
+    "processing_time": "1.5s"
+  },
+  "prediction": "Happiness",
+  "confidence": 0.75,
+  "all_probabilities": {
+    "happiness": 0.75,
+    "surprise": 0.1,
+    "disgust": 0.05,
+    "repression": 0.1
+  },
+  "au_contribution": {},
+  "preprocessing": "Face detection + optical flow + CNN-SVM",
+  "frame_info": {
+    "frames_processed": 10,
+    "faces_detected": 1
+  },
+  "model_info": {
+    "model_type": "Enhanced Hybrid CNN-SVM",
+    "inference_mode": "DEMO_PIPELINE"
+  },
+  "disclaimer": "",
+  "processing_time": "1.5s"
+}

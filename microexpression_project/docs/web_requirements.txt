@@ -1,0 +1,19 @@
+# Web application dependencies
+Flask>=2.0.0
+Werkzeug>=2.0.0
+gunicorn>=20.0.0
+
+# Core ML dependencies (same as inference)
+torch>=1.9.0
+torchvision>=0.10.0
+numpy>=1.21.0
+opencv-python>=4.5.0
+scikit-learn>=1.0.0
+pandas>=1.3.0
+
+# Optional: for production deployment
+# redis>=4.0.0
+# celery>=5.0.0
+
+# Development
+# pytest>=6.0.0

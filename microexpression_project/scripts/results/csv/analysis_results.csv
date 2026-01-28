@@ -1,0 +1,2 @@
+timestamp,analysis_id,filename,file_size_mb,predicted_emotion,confidence,happiness_prob,surprise_prob,disgust_prob,repression_prob,processing_time,frames_processed,faces_detected,model_type,inference_mode
+2026-01-27T20:58:54.559603,cc64a40f,test_video.avi,5.2,Happiness,0.75,0.75,0.1,0.05,0.1,1.5s,10,1,Enhanced Hybrid CNN-SVM,DEMO_PIPELINE

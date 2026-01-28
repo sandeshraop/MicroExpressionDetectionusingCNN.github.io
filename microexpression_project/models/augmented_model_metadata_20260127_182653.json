@@ -1,0 +1,58 @@
+{
+  "timestamp": "20260127_182653",
+  "model_type": "EnhancedHybridModel",
+  "training_accuracy": 0.5326530612244897,
+  "feature_dim": 224,
+  "feature_breakdown": {
+    "cnn_features": 128,
+    "handcrafted": 48,
+    "au_aligned_strain_statistics": 40,
+    "au9_au10_specific": 8
+  },
+  "per_class_performance": {
+    "Happiness": {
+      "precision": 0.5529411764705883,
+      "recall": 1.0,
+      "f1-score": 0.7121212121212122,
+      "support": 141.0
+    },
+    "Surprise": {
+      "precision": 0.4909090909090909,
+      "recall": 0.54,
+      "f1-score": 0.5142857142857142,
+      "support": 100.0
+    },
+    "Disgust": {
+      "precision": 0.8,
+      "recall": 0.028368794326241134,
+      "f1-score": 0.0547945205479452,
+      "support": 141.0
+    },
+    "Repression": {
+      "precision": 0.5166666666666667,
+      "recall": 0.5740740740740741,
+      "f1-score": 0.543859649122807,
+      "support": 108.0
+    },
+    "accuracy": 0.5326530612244897,
+    "macro avg": {
+      "precision": 0.5901292335115865,
+      "recall": 0.5356107171000788,
+      "f1-score": 0.45626527401941963,
+      "support": 490.0
+    },
+    "weighted avg": {
+      "precision": 0.6033788060678817,
+      "recall": 0.5326530612244897,
+      "f1-score": 0.4455112894697669,
+      "support": 490.0
+    }
+  },
+  "training_samples": 490,
+  "optimizations": [
+    "temporal_dynamics_preservation",
+    "scientific_augmentation",
+    "au_weighted_spatial_emphasis",
+    "au_specific_feature_concatenation"
+  ]
+}

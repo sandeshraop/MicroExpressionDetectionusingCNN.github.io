@@ -1,0 +1,44 @@
+{
+  "success": true,
+  "predicted_emotion": "disgust",
+  "relative_probability": 0.5723986179731333,
+  "all_probabilities": {
+    "happiness": 0.29950003772028705,
+    "surprise": 0.08423729303061561,
+    "disgust": 0.5723986179731333,
+    "repression": 0.04386405127596436
+  },
+  "au_contribution": {
+    "most_active_au": "AU12",
+    "total_strain_energy": 0.75,
+    "au_rankings": {
+      "AU12": {
+        "activity_score": 0.9,
+        "description": "Lip Corner Puller"
+      },
+      "AU6": {
+        "activity_score": 0.7,
+        "description": "Cheek Raiser"
+      },
+      "AU1": {
+        "activity_score": 0.5,
+        "description": "Inner Brow Raiser"
+      },
+      "AU4": {
+        "activity_score": 0.4,
+        "description": "Brow Lowerer"
+      },
+      "AU10": {
+        "activity_score": 0.3,
+        "description": "Upper Lip Raiser"
+      }
+    }
+  },
+  "frame_info": {
+    "video_path": "..\\data\\predict\\sub01\\EP02_01f.avi",
+    "frames_processed": 3,
+    "frame_size": "64x64",
+    "preprocessing": "face_detection"
+  },
+  "timestamp": "2026-01-27T17:25:19.029293"
+}

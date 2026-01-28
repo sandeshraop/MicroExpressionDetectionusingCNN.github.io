@@ -1,0 +1,27 @@
+# Core dependencies
+Flask==2.3.3
+Flask-CORS==4.0.0
+Werkzeug==2.3.7
+
+# ML/AI dependencies
+torch==2.0.1
+torchvision==0.15.2
+numpy==1.24.3
+opencv-python==4.8.1.78
+scikit-learn==1.3.0
+pandas==2.0.3
+
+# Image processing
+Pillow==10.0.1
+transforms==0.2.0
+
+# Database/Cache
+redis==4.6.0
+joblib==1.3.2
+
+# Utilities
+python-dotenv==1.0.0
+gunicorn==21.2.0
+
+# Production
+gevent==23.7.0

@@ -1,0 +1,15 @@
+{
+  "model_type": "augmented_balanced_au_aligned_svm",
+  "training_date": "20260127_172004",
+  "training_params": {
+    "epochs": 12,
+    "learning_rate": 0.001,
+    "device": "auto",
+    "dataset_size": "test_dataset"
+  },
+  "performance": {
+    "training_accuracy": "test_accuracy",
+    "classification_report": "test_report"
+  },
+  "model_info": "test_model_info"
+}
