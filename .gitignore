@@ -2,6 +2,10 @@
 microexpression_project/data/casme2/
 microexpression_project/data/predict/
 
+# Ignore cache directories
+microexpression_project/scripts/__pycache__/
+microexpression_project/web/__pycache__/
+
 # Common Python ignores
 __pycache__/
 *.py[cod]
