@@ -4,11 +4,14 @@ import numpy as np
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 import joblib
 
 from cnn_feature_extractor import HybridFlowCNN
 from optical_flow_utils import compute_au_aligned_strain_statistics
+from facesleuth_optical_flow import FaceSleuthOpticalFlow
+from au_soft_boosting import AUSoftBoosting, extract_au_activations_from_strain
+from boosting_logger import create_boosting_logger
 from config import NUM_EMOTIONS, EMOTION_DISPLAY_ORDER
 
 
@@ -26,16 +29,39 @@ class EnhancedHybridModel:
     More interpretable and noise-resistant than uniform grid.
     """
     
-    def __init__(self, cnn_model: str = 'hybrid', classifier_type: str = 'svm'):
+    def __init__(self, cnn_model: str = 'hybrid', classifier_type: str = 'svm', 
+                 use_facesleuth: bool = True, vertical_alpha: float = 1.5,
+                 enable_boosting_logging: bool = True):
         """
         Initialize enhanced hybrid model.
         
         Args:
             cnn_model: 'hybrid' for HybridFlowCNN
             classifier_type: 'svm', 'rf', or 'xgb'
+            use_facesleuth: Enable FaceSleuth innovations
+            vertical_alpha: Vertical bias factor (1.0=baseline, 1.5=FaceSleuth)
+            enable_boosting_logging: Log boosting effects for validation
         """
         self.cnn_model = cnn_model
         self.classifier_type = classifier_type
+        self.use_facesleuth = use_facesleuth
+        self.vertical_alpha = vertical_alpha
+        self.enable_boosting_logging = enable_boosting_logging
+        
+        # Initialize FaceSleuth optical flow processor
+        if self.use_facesleuth:
+            self.facesleuth_processor = FaceSleuthOpticalFlow(
+                vertical_emphasis_alpha=self.vertical_alpha
+            )
+            
+            # Initialize AU soft booster
+            self.au_booster = AUSoftBoosting(lambda_boost=0.3)
+            
+            # Initialize boosting logger
+            if self.enable_boosting_logging:
+                self.boosting_logger = create_boosting_logger()
+            else:
+                self.boosting_logger = None
         
         # Initialize CNN feature extractor
         if cnn_model == 'hybrid':
@@ -89,6 +115,45 @@ class EnhancedHybridModel:
         
         return features.cpu().numpy()
     
+    def extract_facesleuth_vertical_features(self, flows: torch.Tensor) -> np.ndarray:
+        """
+        Extract FaceSleuth vertical dominance features from flow tensor.
+        
+        Args:
+            flows: Flow tensor (batch_size, 6, 64, 64) or (6, 64, 64)
+        
+        Returns:
+            FaceSleuth vertical features as numpy array (4-D)
+        """
+        # Handle both 3D and 4D tensors
+        if flows.dim() == 3:
+            flows = flows.unsqueeze(0)  # Add batch dimension
+        
+        batch_size = flows.shape[0]
+        vertical_features = []
+        
+        for i in range(batch_size):
+            # Convert to numpy for FaceSleuth processing
+            flow_np = flows[i].cpu().numpy()
+            
+            # Extract first temporal window (channels 0,1) for vertical analysis
+            flow_2ch = np.stack([flow_np[0], flow_np[1]], axis=-1)
+            
+            # Extract vertical dominance features
+            vd = self.facesleuth_processor.extract_vertical_dominance_features(flow_2ch)
+            
+            # Create FaceSleuth feature vector (4-D)
+            facesleuth_features = np.array([
+                vd['vertical_dominance'],
+                vd['vertical_ratio'],
+                vd['vertical_mean'],
+                vd['vertical_std']
+            ])
+            
+            vertical_features.append(facesleuth_features)
+        
+        return np.array(vertical_features)
+    
     def extract_au_aligned_strain_statistics(self, flows: torch.Tensor) -> np.ndarray:
         """
         Extract AU-aligned strain statistics from flow tensor.
@@ -99,6 +164,11 @@ class EnhancedHybridModel:
         Returns:
             AU-aligned strain statistics as numpy array (40-D)
         """
+        # FIX #2: Apply FaceSleuth bias BEFORE AU strain computation
+        if self.use_facesleuth and hasattr(self, 'facesleuth_processor'):
+            # Apply vertical bias to flows before AU strain computation
+            flows = self.apply_facesleuth_bias_to_flows(flows)
+        
         # Handle both 3D and 4D tensors
         if flows.dim() == 3:
             flows = flows.unsqueeze(0)  # Add batch dimension
@@ -120,6 +190,24 @@ class EnhancedHybridModel:
             all_stats.append(combined_stats)
         
         return np.array(all_stats)
+    
+    def apply_facesleuth_bias_to_flows(self, flows: torch.Tensor) -> torch.Tensor:
+        """
+        Apply FaceSleuth vertical bias to flow tensors.
+        
+        Args:
+            flows: Flow tensor (batch_size, 6, 64, 64)
+        
+        Returns:
+            Biased flow tensor
+        """
+        biased_flows = flows.clone()
+        
+        # Apply vertical bias to vertical components (channels 1, 3, 5)
+        for i in [1, 3, 5]:  # Vertical flow components
+            biased_flows[:, i, :, :] *= self.vertical_alpha
+        
+        return biased_flows
     
     def extract_handcrafted_features(self, frames: torch.Tensor) -> np.ndarray:
         """
@@ -242,16 +330,135 @@ class EnhancedHybridModel:
         
         return np.array(au9_au10_stats)
     
+    def predict_with_facesleuth_boosting(self, frames: torch.Tensor, flows: torch.Tensor,
+                                      sample_id: str = "unknown", true_label: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Predict with FaceSleuth innovations and proper AU boosting.
+        
+        CRITICAL FIXES IMPLEMENTED:
+        1. ✅ Real AU activations from strain statistics (not fake)
+        2. ✅ Conditional boosting (only when uncertain)
+        3. ✅ Pre/post score logging for validation
+        
+        Args:
+            frames: Frame tensor (batch_size, 3, 64, 64)
+            flows: Flow tensor (batch_size, 6, 64, 64)
+            sample_id: Sample identifier for logging
+            true_label: Ground truth label (for accuracy tracking)
+            
+        Returns:
+            Prediction dictionary with all FaceSleuth effects
+        """
+        if not self.use_facesleuth:
+            # Fallback to original prediction
+            features = self.extract_all_features(frames, flows)
+            probabilities = self.pipeline.predict_proba(features)
+            predictions = np.argmax(probabilities, axis=1)
+            
+            return {
+                'predictions': predictions,
+                'probabilities': probabilities,
+                'facesleuth_applied': False,
+                'boosting_applied': False,
+                'sample_id': sample_id
+            }
+        
+        # Extract all features including FaceSleuth
+        features = self.extract_all_features(frames, flows)
+        
+        # Get base predictions
+        base_probabilities = self.pipeline.predict_proba(features)
+        base_predictions = np.argmax(base_probabilities, axis=1)
+        
+        # CRITICAL FIX #1: Extract REAL AU activations from strain statistics
+        au_strain_stats = self.extract_au_aligned_strain_statistics(flows.cpu())
+        au_activations = extract_au_activations_from_strain(au_strain_stats[0])  # First sample
+        
+        # CRITICAL FIX #2: Apply CONDITIONAL boosting
+        base_probs_tensor = torch.tensor(base_probabilities[0], dtype=torch.float32)
+        boosted_probs_tensor, boosting_info = self.au_booster.apply_conditional_soft_boosting(
+            base_probs_tensor.unsqueeze(0), 
+            au_activations
+        )
+        
+        boosted_probabilities = boosted_probs_tensor.detach().cpu().numpy()
+        boosted_predictions = np.argmax(boosted_probabilities, axis=1)
+        
+        # CRITICAL FIX #3: Log pre/post boosting effects
+        if self.boosting_logger is not None:
+            self.boosting_logger.log_boosting_effect(
+                sample_id=sample_id,
+                before_scores=base_probabilities[0],
+                after_scores=boosted_probabilities[0],
+                boosting_info=boosting_info,
+                true_label=true_label,
+                predicted_label_before=base_predictions[0],
+                predicted_label_after=boosted_predictions[0]
+            )
+        
+        # Compile comprehensive results
+        results = {
+            'predictions': boosted_predictions,
+            'probabilities': boosted_probabilities,
+            'base_predictions': base_predictions,
+            'base_probabilities': base_probabilities,
+            'facesleuth_applied': True,
+            'boosting_applied': boosting_info['boosting_applied'],
+            'boosting_info': boosting_info,
+            'au_activations': au_activations.tolist(),
+            'sample_id': sample_id,
+            'true_label': true_label,
+            'vertical_alpha': self.vertical_alpha,
+            'feature_dimension': features.shape[1],
+            'improvement': {
+                'prediction_changed': base_predictions[0] != boosted_predictions[0],
+                'confidence_change': boosting_info['confidence_change'],
+                'max_confidence_before': boosting_info['max_confidence'],
+                'max_confidence_after': np.max(boosted_probabilities[0])
+            }
+        }
+        
+        # Add correctness info if ground truth available
+        if true_label is not None:
+            results['correctness'] = {
+                'base_correct': (base_predictions[0] == true_label),
+                'boosted_correct': (boosted_predictions[0] == true_label),
+                'improved': (base_predictions[0] != true_label and boosted_predictions[0] == true_label),
+                'worsened': (base_predictions[0] == true_label and boosted_predictions[0] != true_label)
+            }
+        
+        return results
+    
+    def get_boosting_analysis(self) -> Dict:
+        """
+        Get comprehensive analysis of boosting effects.
+        
+        Returns:
+            Analysis dictionary with boosting statistics
+        """
+        if not self.boosting_logger:
+            return {'error': 'Boosting logging not enabled'}
+        
+        return self.boosting_logger.analyze_session_effects()
+    
+    def save_boosting_logs(self) -> None:
+        """Save boosting logs to file."""
+        if self.boosting_logger:
+            self.boosting_logger.save_logs()
+            self.boosting_logger.create_reviewer_table()
+        else:
+            print("⚠️ Boosting logging not enabled")
+    
     def extract_all_features(self, frames: torch.Tensor, flows: torch.Tensor) -> np.ndarray:
         """
-        Extract all features: handcrafted + AU-aligned strain statistics + CNN features.
+        Extract all features: handcrafted + AU-aligned strain statistics + CNN features + FaceSleuth.
         
         Args:
             frames: Frame tensor (batch_size, 3, 64, 64)
             flows: Flow tensor (batch_size, 6, 64, 64)
         
         Returns:
-            Combined feature vector (~216-D)
+            Combined feature vector (~220-D with FaceSleuth)
         """
         # Extract different feature types
         handcrafted = self.extract_handcrafted_features(frames)  # (batch_size, 48)
@@ -259,11 +466,27 @@ class EnhancedHybridModel:
         au9_au10_stats = self.extract_au9_au10_stats(flows)  # (batch_size, 8)
         cnn_features = self.extract_cnn_features(frames, flows)  # (batch_size, 128)
         
-        # ✅ AU-SPECIFIC FEATURE CONCATENATION - Disgust boost
-        # Final SVM feature vector: [CNN + handcrafted + AU_aligned + AU9_AU10]
-        combined_features = np.concatenate([cnn_features, handcrafted, au_strain_stats, au9_au10_stats], axis=1)
+        # FIX #1: Add FaceSleuth vertical dominance features
+        if self.use_facesleuth and hasattr(self, 'facesleuth_processor'):
+            facesleuth_features = self.extract_facesleuth_vertical_features(flows)  # (batch_size, 4)
+            
+            # ✅ ENHANCED FEATURE CONCATENATION with FaceSleuth
+            # Final SVM feature vector: [CNN + handcrafted + AU_aligned + AU9_AU10 + FaceSleuth]
+            combined_features = np.concatenate([
+                cnn_features, 
+                handcrafted, 
+                au_strain_stats, 
+                au9_au10_stats,
+                facesleuth_features  # NEW: FaceSleuth vertical features
+            ], axis=1)
+            
+            print(f"✅ FaceSleuth features added: {facesleuth_features.shape[1]}D")
+            print(f"🎯 Total feature dimension: {combined_features.shape[1]}D")
+        else:
+            # Original concatenation without FaceSleuth
+            combined_features = np.concatenate([cnn_features, handcrafted, au_strain_stats, au9_au10_stats], axis=1)
         
-        return combined_features  # (batch_size, 224) - 128+48+40+8
+        return combined_features  # (batch_size, 224) or 228 with FaceSleuth
     
     def fit(self, frames_list: List[torch.Tensor], flows_list: List[torch.Tensor], 
             labels: np.ndarray, train_cnn: bool = True) -> None:
@@ -296,14 +519,18 @@ class EnhancedHybridModel:
             all_features.append(features)
         
         # Concatenate all features
-        all_features = np.vstack(all_features)
+        all_features = torch.stack(all_features)
         
         print(f"Extracted features shape: {all_features.shape}")
         print(f"Labels shape: {labels.shape}")
         print(f"Feature breakdown: 48 (handcrafted) + 40 (AU-aligned strain stats) + 128 (CNN) = {all_features.shape[1]} total")
         
+        # Convert to numpy for sklearn compatibility
+        all_features_np = all_features.cpu().numpy()
+        labels_np = labels
+        
         # Fit the pipeline
-        self.pipeline.fit(all_features, labels)
+        self.pipeline.fit(all_features_np, labels_np)
         self.is_fitted = True
         
         print("Enhanced hybrid pipeline fitted successfully!")

@@ -1,0 +1,56 @@
+{
+  "analysis_id": "477427fe",
+  "timestamp": "2026-01-29T16:46:20.471972",
+  "video_info": {
+    "filename": "EP12_01f.avi",
+    "file_size_mb": 35.67724609375,
+    "processing_time": "0.30s"
+  },
+  "prediction": "Surprise",
+  "confidence": 0.4035945562377337,
+  "all_probabilities": {
+    "happiness": 0.04946803637067031,
+    "surprise": 0.4035945562377337,
+    "disgust": 0.3777244127304356,
+    "repression": 0.16921299466116044
+  },
+  "au_contribution": {
+    "visual_explanation_only": true,
+    "most_active_au": "AU12 (Lip Corner Puller)",
+    "total_strain_energy": 1.2794177009127836,
+    "au_rankings": {
+      "AU12": {
+        "description": "Lip Corner Puller",
+        "activity_score": 0.044521232733603276
+      },
+      "AU25": {
+        "description": "Lips Part",
+        "activity_score": 0.2825161893664136
+      },
+      "AU6": {
+        "description": "Cheek Raiser",
+        "activity_score": 0.22663464763826136
+      },
+      "AU9": {
+        "description": "Nose Wrinkler",
+        "activity_score": 0.08460649733058022
+      }
+    }
+  },
+  "preprocessing": "Face detection + optical flow + CNN-SVM inspired demonstration pipeline",
+  "frame_info": {
+    "frame_size": "64x64",
+    "frames_processed": 10,
+    "faces_detected": 10,
+    "model_features": 228,
+    "tensor_format": "NCHW (frames) + 6-channel flows"
+  },
+  "model_info": {
+    "model_type": "Enhanced Hybrid CNN-SVM",
+    "feature_dimensions": 224,
+    "evaluation_method": "LOS0",
+    "inference_mode": "DEMO_PIPELINE"
+  },
+  "disclaimer": "This web interface demonstrates the trained pipeline. Scientifically valid performance is reported only via offline LOSO evaluation.",
+  "processing_time": "0.30s"
+}
