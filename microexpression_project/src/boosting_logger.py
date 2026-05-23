@@ -13,6 +13,8 @@ from datetime import datetime
 import json
 from pathlib import Path
 
+from config import NUM_EMOTIONS
+
 
 class BoostingEffectLogger:
     """
@@ -153,7 +155,7 @@ class BoostingEffectLogger:
         
         # Emotion-specific analysis
         emotion_analysis = {}
-        for emotion_idx in range(4):  # 4 emotions
+        for emotion_idx in range(NUM_EMOTIONS):
             emotion_mask = df['prediction_before'] == emotion_idx
             if emotion_mask.any():
                 emotion_df = df[emotion_mask]
@@ -302,8 +304,9 @@ def create_boosting_logger(log_dir: str = "results") -> BoostingEffectLogger:
     """
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
-    
-    return BoostingEffectLogger()
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return BoostingEffectLogger(str(log_path / f"boosting_effects_{timestamp}.json"))
 
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
 // Real JavaScript for Micro-Expression Recognition Web Interface
 // Connects to actual Flask backend with real model predictions
 
+/** Radar chart instance; data filled from `/api/health` model_info (not hardcoded demo numbers). */
+let performanceChartRef = null;
+
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize all components
     initializeNavigation();
     initializeUpload();
+    initializeCasmeEpisodeAnalyze();
     initializeAnimations();
     initializeCharts();
     initializeScrollEffects();
@@ -57,6 +61,18 @@ function initializeNavigation() {
             }
         });
     });
+}
+
+/** sub01_EP02_01f.avi → CASME bridge on upload (reg_img + CSV), same protocol as training. */
+function parseCasmeHintsFromFileName(name) {
+    if (!name) return { subject_id: '', episode_id: '' };
+    const base = (name.split(/[/\\]/).pop() || name).trim();
+    const stem = base.replace(/\.[^.]+$/i, '');
+    let m = stem.match(/(sub\d{2})[-_+]+(EP[A-Za-z0-9_]+)$/i);
+    if (m) return { subject_id: m[1].toLowerCase(), episode_id: m[2] };
+    m = stem.match(/(EP[A-Za-z0-9_]+)[-_+]+(sub\d{2})$/i);
+    if (m) return { subject_id: m[2].toLowerCase(), episode_id: m[1] };
+    return { subject_id: '', episode_id: '' };
 }
 
 // File upload functionality with real backend integration
@@ -112,14 +128,17 @@ async function checkModelStatus() {
         if (data.model_loaded) {
             showAlert('Model loaded successfully! Ready for real predictions.', 'success');
             updateModelStatus(true, data.model_info);
+            updatePerformanceMetrics(data.model_info || {});
         } else {
             showAlert('Model not loaded. Demo mode only.', 'warning');
             updateModelStatus(false, {});
+            updatePerformanceMetrics({});
         }
     } catch (error) {
         console.error('Model status check failed:', error);
         showAlert('Cannot connect to backend. Demo mode only.', 'warning');
         updateModelStatus(false, {});
+        updatePerformanceMetrics({});
     }
 }
 
@@ -136,6 +155,121 @@ function updateModelStatus(loaded, modelInfo) {
             element.className = 'bg-red-100 text-red-800 px-3 py-1 rounded-full text-sm font-medium';
         }
     });
+}
+
+/**
+ * Hero "System Performance" numbers: use checkpoint metadata when present.
+ * Legacy static values (46.3% / 24.8% / 71.6%) were documentation placeholders, not live eval.
+ */
+function updatePerformanceMetrics(modelInfo) {
+    const accEl = document.getElementById('metricAccuracy');
+    const uarEl = document.getElementById('metricUar');
+    const hapEl = document.getElementById('metricHappinessRecall');
+    const note = document.getElementById('performanceSourceNote');
+    if (!accEl || !uarEl || !hapEl) return;
+
+    const ta = modelInfo.training_accuracy;
+    if (typeof ta === 'number' && !Number.isNaN(ta)) {
+        accEl.textContent = (ta * 100).toFixed(1) + '%';
+    } else {
+        accEl.textContent = '—';
+    }
+
+    if (typeof modelInfo.uar === 'number' && !Number.isNaN(modelInfo.uar)) {
+        uarEl.textContent = (modelInfo.uar * 100).toFixed(1) + '%';
+    } else {
+        uarEl.textContent = '—';
+    }
+
+    if (typeof modelInfo.happiness_recall === 'number' && !Number.isNaN(modelInfo.happiness_recall)) {
+        hapEl.textContent = (modelInfo.happiness_recall * 100).toFixed(1) + '%';
+    } else {
+        hapEl.textContent = '—';
+    }
+
+    if (note) {
+        const hasAny =
+            (typeof ta === 'number' && !Number.isNaN(ta)) ||
+            (typeof modelInfo.uar === 'number' && !Number.isNaN(modelInfo.uar)) ||
+            (typeof modelInfo.happiness_recall === 'number' && !Number.isNaN(modelInfo.happiness_recall));
+        note.textContent = hasAny
+            ? 'Values below come from the loaded model metadata (training run).'
+            : 'No eval metrics in this checkpoint metadata — upload still uses the live model.';
+    }
+
+    refreshPerformanceChart(modelInfo);
+}
+
+function pct01(x) {
+    return typeof x === 'number' && !Number.isNaN(x) ? x * 100 : null;
+}
+
+function buildRadarSeries(modelInfo) {
+    const acc = pct01(modelInfo.training_accuracy);
+    const uar = pct01(modelInfo.uar);
+    const hap = pct01(modelInfo.happiness_recall);
+    const pc = modelInfo.per_class_recall || {};
+    const disg = pct01(modelInfo.disgust_recall ?? pc.disgust);
+    const temporal = pct01(modelInfo.temporal_preservation);
+    return [
+        acc ?? 0,
+        uar ?? 0,
+        hap ?? 0,
+        disg ?? 0,
+        temporal ?? 0
+    ];
+}
+
+function refreshPerformanceChart(modelInfo) {
+    if (!performanceChartRef) return;
+    performanceChartRef.data.datasets[0].data = buildRadarSeries(modelInfo);
+    performanceChartRef.update();
+}
+
+function initializeCasmeEpisodeAnalyze() {
+    const btn = document.getElementById('casmeAnalyzeBtn');
+    if (!btn) return;
+    btn.addEventListener('click', runCasmeEpisodeAnalyze);
+}
+
+async function runCasmeEpisodeAnalyze() {
+    const subEl = document.getElementById('casmeSubject');
+    const epEl = document.getElementById('casmeEpisode');
+    if (!subEl || !epEl) return;
+    const subject_id = (subEl.value || '').trim();
+    const episode_id = (epEl.value || '').trim();
+    if (!subject_id || !episode_id) {
+        showAlert('Enter subject (e.g. sub01) and episode (e.g. EP02_01f).', 'warning');
+        return;
+    }
+    processingStartTime = Date.now();
+    showAlert('Running CASME-aligned analysis…', 'info');
+    try {
+        const response = await fetch('/api/analyze-casme-episode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subject_id, episode_id })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || response.statusText);
+        }
+        displayRealResults(result);
+        const uploadArea = document.getElementById('uploadArea');
+        const analysisResults = document.getElementById('analysisResults');
+        if (uploadArea) uploadArea.classList.add('d-none');
+        if (analysisResults) analysisResults.classList.remove('d-none');
+        const ok = result.casme_prediction_correct;
+        showAlert(
+            ok
+                ? `CASME analysis: predicted ${result.prediction} (matches label ${result.casme_ground_truth_emotion}).`
+                : `CASME analysis: predicted ${result.prediction}; label is ${result.casme_ground_truth_emotion}.`,
+            ok ? 'success' : 'warning'
+        );
+    } catch (e) {
+        console.error(e);
+        showAlert('CASME episode analysis failed: ' + e.message, 'danger');
+    }
 }
 
 // Handle file upload with real backend
@@ -198,6 +332,19 @@ async function uploadVideo() {
 
     const formData = new FormData();
     formData.append('file', selectedFile);
+    formData.append('original_filename', selectedFile.name || '');
+    const casmeHints = parseCasmeHintsFromFileName(selectedFile.name || '');
+    const manualSub = document.getElementById('casmeSubject')?.value?.trim() || '';
+    const manualEp = document.getElementById('casmeEpisode')?.value?.trim() || '';
+    const sid = manualSub || casmeHints.subject_id;
+    const eid = manualEp || casmeHints.episode_id;
+    if (sid) formData.append('subject_id', sid);
+    if (eid) formData.append('episode_id', eid);
+    if (document.getElementById('forceVideoPixels')?.checked) {
+        formData.append('force_video_pixels', '1');
+    }
+    const mvf = document.getElementById('maxVideoFrames')?.value;
+    if (mvf) formData.append('max_video_frames', mvf);
 
     // Show processing state
     const uploadContent = document.querySelector('.upload-content');
@@ -266,6 +413,27 @@ function updateStepStatus(elementId, status) {
 }
 
 // Display real results from model
+/** Map row label text (e.g. "Happiness") to API key in all_probabilities. */
+function emotionApiKeyFromRowLabel(labelText) {
+    const t = (labelText || '').trim().toLowerCase();
+    const map = {
+        happiness: 'happiness',
+        surprise: 'surprise',
+        disgust: 'disgust',
+        repression: 'repression',
+        others: 'others',
+    };
+    return map[t] ?? null;
+}
+
+/** Backend uses 0–1 probabilities; tolerate accidental 0–100 values. */
+function normalizeProbability01(raw) {
+    let p = Number(raw);
+    if (!Number.isFinite(p)) return 0;
+    if (p > 1.0001) p = p / 100;
+    return Math.min(1, Math.max(0, p));
+}
+
 function displayRealResults(result) {
     const processingTime = ((Date.now() - processingStartTime) / 1000).toFixed(2);
     
@@ -281,32 +449,31 @@ function displayRealResults(result) {
         const emotionName = emotionBadge.querySelector('.emotion-name');
         const confidence = emotionBadge.querySelector('.confidence');
         if (emotionName) emotionName.textContent = result.prediction;
-        if (confidence) confidence.textContent = (result.confidence * 100).toFixed(1) + '%';
+        if (confidence) confidence.textContent = (normalizeProbability01(result.confidence) * 100).toFixed(1) + '%';
         
-        console.log('✅ Updated emotion badge:', result.prediction, (result.confidence * 100).toFixed(1) + '%');
+        console.log('✅ Updated emotion badge:', result.prediction, (normalizeProbability01(result.confidence) * 100).toFixed(1) + '%');
     }
     
-    // Update probability bars
-    const probabilityBars = document.querySelector('.probability-bars');
+    // Update probability bars (scope to results panel so we never hit a stray duplicate node)
+    const probabilityBars = document.querySelector('#analysisResults .probability-bars');
+    const probs = result.all_probabilities || {};
     if (probabilityBars) {
         const items = probabilityBars.querySelectorAll('.probability-item');
-        const emotions = ['happiness', 'surprise', 'disgust', 'repression'];
         
-        items.forEach((item, index) => {
-            const emotion = emotions[index];
-            const probability = result.all_probabilities[emotion] || 0;
+        items.forEach((item) => {
+            const labelEl = item.querySelector('span:first-child');
+            const key = emotionApiKeyFromRowLabel(labelEl ? labelEl.textContent : '');
+            const probability = key != null ? normalizeProbability01(probs[key]) : 0;
             const progressBar = item.querySelector('.progress-bar');
             const percentage = item.querySelector('span:last-child');
             
             // Debug log to check values
-            console.log(`Emotion: ${emotion}, Probability (decimal): ${probability}, Probability (%): ${probability * 100}`);
+            console.log(`Emotion row: ${key}, p=${probability}`);
             
             if (progressBar) {
-                // Convert decimal to percentage for display
                 progressBar.style.width = (probability * 100) + '%';
             }
             if (percentage) {
-                // Convert decimal to percentage for display
                 percentage.textContent = (probability * 100).toFixed(1) + '%';
             }
         });
@@ -321,26 +488,58 @@ function displayRealResults(result) {
         modelType.textContent = result.model_info.model_type || 'CNN-SVM Hybrid';
     }
     if (modelFeatures && result.model_info) {
-        modelFeatures.textContent = result.model_info.feature_dimensions + ' dimensions' || '228 dimensions';
+        const fd = result.model_info.feature_dimensions ?? result.model_info.feature_dim;
+        modelFeatures.textContent = fd != null ? `${fd} dimensions` : '228 dimensions';
     }
     if (modelEvaluation && result.model_info) {
-        modelEvaluation.textContent = result.model_info.evaluation_method || 'LOS0';
+        modelEvaluation.textContent = result.model_info.evaluation_method || 'LOSO (offline)';
     }
     
     // Add processing info if not present
     const modelInfo = document.querySelector('.model-info');
-    if (modelInfo && !modelInfo.querySelector('.processing-info')) {
-        const processingDiv = document.createElement('div');
-        processingDiv.className = 'processing-info mt-2 pt-2 border-top border-blue-200';
+    if (modelInfo) {
+        let processingDiv = modelInfo.querySelector('.processing-info');
+        if (!processingDiv) {
+            processingDiv = document.createElement('div');
+            processingDiv.className = 'processing-info mt-2 pt-2 border-top border-blue-200';
+            modelInfo.appendChild(processingDiv);
+        }
+        const note = result.prediction_note
+            ? `<div class="text-warning small mt-1">${escapeHtml(result.prediction_note)}</div>`
+            : '';
+        const casme =
+            result.casme_episode != null
+                ? `<div>CASME: ${escapeHtml(result.casme_subject)}/${escapeHtml(result.casme_episode)} — label: ${escapeHtml(result.casme_ground_truth_emotion || '')}</div>`
+                : '';
+        const mode = result.model_info && result.model_info.inference_mode
+            ? `<div><strong>Inference mode:</strong> ${escapeHtml(result.model_info.inference_mode)}</div>`
+            : '';
+        const pin = result.prediction_input
+            ? `<div class="mt-1 small text-dark"><strong>What drove this prediction:</strong> ${escapeHtml(result.prediction_input)}</div>`
+            : '';
+        const disc = result.disclaimer
+            ? `<div class="mt-1 small text-muted">${escapeHtml(result.disclaimer)}</div>`
+            : '';
         processingDiv.innerHTML = `
             <div class="text-xs text-blue-600">
                 <div>Processing Time: ${processingTime}s</div>
                 <div>Timestamp: ${new Date(result.timestamp).toLocaleString()}</div>
-                <div>Preprocessing: ${result.preprocessing || 'Unknown'}</div>
+                ${casme}
+                ${mode}
+                ${pin}
+                <div>Preprocessing: ${escapeHtml(result.preprocessing || 'Unknown')}</div>
+                ${disc}
+                ${note}
             </div>
         `;
-        modelInfo.appendChild(processingDiv);
     }
+}
+
+function escapeHtml(s) {
+    if (s == null || s === '') return '';
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
 }
 
 // Emotion icons mapping
@@ -348,7 +547,8 @@ const emotionIcons = {
     'happiness': '😊',
     'surprise': '😲',
     'disgust': '🤢',
-    'repression': '😔'
+    'repression': '😔',
+    'others': '😐'
 };
 
 function updateProbabilityChart(probabilities) {
@@ -369,13 +569,15 @@ function updateProbabilityChart(probabilities) {
                     'rgba(59, 130, 246, 0.8)',
                     'rgba(16, 185, 129, 0.8)',
                     'rgba(251, 146, 60, 0.8)',
-                    'rgba(239, 68, 68, 0.8)'
+                    'rgba(239, 68, 68, 0.8)',
+                    'rgba(107, 114, 128, 0.8)'
                 ],
                 borderColor: [
                     'rgba(59, 130, 246, 1)',
                     'rgba(16, 185, 129, 1)',
                     'rgba(251, 146, 60, 1)',
-                    'rgba(239, 68, 68, 1)'
+                    'rgba(239, 68, 68, 1)',
+                    'rgba(107, 114, 128, 1)'
                 ],
                 borderWidth: 1
             }]
@@ -504,13 +706,13 @@ function initializeCharts() {
     // Performance metrics chart
     const ctx = document.getElementById('performanceChart');
     if (ctx) {
-        new Chart(ctx, {
+        performanceChartRef = new Chart(ctx, {
             type: 'radar',
             data: {
                 labels: ['Accuracy', 'UAR', 'Happiness Recall', 'Disgust Recall', 'Temporal Preservation'],
                 datasets: [{
-                    label: 'Our Method',
-                    data: [46.3, 24.8, 71.6, 27.4, 100],
+                    label: 'From checkpoint metadata',
+                    data: buildRadarSeries({}),
                     backgroundColor: 'rgba(102, 126, 234, 0.2)',
                     borderColor: 'rgba(102, 126, 234, 1)',
                     borderWidth: 2

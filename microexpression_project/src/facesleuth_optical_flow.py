@@ -39,6 +39,10 @@ class FaceSleuthOpticalFlow:
             'poly_sigma': 1.2,
             'flags': cv2.OPTFLOW_FARNEBACK_GAUSSIAN
         }
+
+    def apply_tensor_vertical_bias_6ch(self, flows: "torch.Tensor") -> "torch.Tensor":
+        """Apply vertical emphasis to batched 6-channel flow (B, T, 6, H, W) or (B, 6, H, W)."""
+        return apply_vertical_bias_to_six_channel(flows, self.alpha)
     
     def compute_vertical_biased_flow(self, frame1: np.ndarray, frame2: np.ndarray) -> np.ndarray:
         """
@@ -141,6 +145,17 @@ class FaceSleuthOpticalFlow:
             flows.append(flow)
         
         return flows
+
+
+def apply_vertical_bias_to_six_channel(flow_tensor: torch.Tensor, alpha: float = 1.5) -> torch.Tensor:
+    """
+    Apply vertical emphasis to a 6-channel flow tensor (vx,vy per window), matching
+    ``FaceSleuthHybridModel.apply_vertical_bias_to_flows`` channel layout.
+    """
+    biased = flow_tensor.clone()
+    for ch in (1, 3, 5):
+        biased[..., ch, :, :] *= alpha
+    return biased
 
 
 def apply_vertical_bias_to_tensor(flow_tensor: torch.Tensor, alpha: float = 1.5) -> torch.Tensor:

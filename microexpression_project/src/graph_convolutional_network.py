@@ -72,17 +72,16 @@ class GraphAttentionLayer(nn.Module):
             Updated node features (batch_size, num_rois, out_features)
         """
         batch_size, num_rois, _ = h.size()
-        
-        # Linear transformation for each head
-        Wh = torch.einsum('bij,hjk->bhik', h, self.W)  # (batch, heads, rois, out_features)
-        
-        # Compute attention coefficients
-        Wh1 = torch.matmul(Wh, self.a[:, :self.out_features, :])  # (batch, heads, rois, 1)
-        Wh2 = torch.matmul(Wh, self.a[:, self.out_features:, :])  # (batch, heads, rois, 1)
-        
-        # Broadcast and sum for attention coefficients
-        e = Wh1 + Wh2.transpose(-2, -1)  # (batch, heads, rois, rois)
-        e = self.leakyrelu(e)
+        fout = self.out_features
+
+        Wh = torch.einsum('bij,hjk->bhik', h, self.W)
+
+        # self.a: (num_heads, 2 * out_features) — split for source / target terms (GAT-style)
+        a_src = self.a[:, :fout]
+        a_dst = self.a[:, fout:]
+        score_i = torch.einsum('bhnf,hf->bhn', Wh, a_src).unsqueeze(-1)
+        score_j = torch.einsum('bhnf,hf->bhn', Wh, a_dst).unsqueeze(-2)
+        e = self.leakyrelu(score_i + score_j)
         
         # Apply adjacency mask
         zero_vec = -9e15 * torch.ones_like(e)
@@ -132,24 +131,19 @@ class FacialAdjacencyMatrix:
         adj = torch.zeros(self.num_rois, self.num_rois)
         
         if connectivity == 'full':
-            # All ROIs connected to each other
             adj.fill_(1.0)
-            torch.fill_diagonal(adj, 1.0)  # Self-connections
-            
+
         elif connectivity == 'facial':
-            # Natural facial connectivity
             if self.num_rois == 3:
-                # Eyebrows ↔ Eyes ↔ Mouth (natural chain)
-                adj[0, 1] = adj[1, 0] = 1.0  # Eyebrows ↔ Eyes
-                adj[1, 2] = adj[2, 1] = 1.0  # Eyes ↔ Mouth
-                adj[0, 2] = adj[2, 0] = 0.5  # Eyebrows ↔ Mouth (weaker)
-                torch.fill_diagonal(adj, 1.0)  # Self-connections
-                
+                adj[0, 1] = adj[1, 0] = 1.0
+                adj[1, 2] = adj[2, 1] = 1.0
+                adj[0, 2] = adj[2, 0] = 0.5
+                adj.fill_diagonal_(1.0)
+
         elif connectivity == 'sparse':
-            # Minimal connectivity
-            adj[0, 1] = adj[1, 0] = 1.0  # Only adjacent connections
+            adj[0, 1] = adj[1, 0] = 1.0
             adj[1, 2] = adj[2, 1] = 1.0
-            torch.fill_diagonal(adj, 1.0)
+            adj.fill_diagonal_(1.0)
         
         return adj
     

@@ -6,13 +6,17 @@ const urlsToCache = [
   '/',
   '/index.html',
   '/css/style.css',
-  '/js/main.js',
-  '/visualizations/confusion_matrix_comprehensive.png',
-  '/visualizations/system_architecture_flow.png',
-  '/visualizations/temporal_dynamics_analysis.png',
-  '/visualizations/feature_analysis_comprehensive.png',
-  '/visualizations/performance_analysis_comprehensive.png',
-  '/visualizations/loso_evaluation_protocol.png'
+  '/js/real_main.js',
+  '/model-report-graphs/per_subject_accuracy.png',
+  '/model-report-graphs/confusion_matrix_counts.png',
+  '/model-report-graphs/confusion_matrix_row_normalized.png',
+  '/model-report-graphs/confusion_matrix_col_normalized.png',
+  '/model-report-graphs/roc_ovr.png',
+  '/model-report-graphs/pr_ovr.png',
+  '/model-report-graphs/calibration_top1.png',
+  '/model-report-graphs/per_class_f1.png',
+  '/model-report-graphs/per_class_precision.png',
+  '/model-report-graphs/per_class_recall.png'
 ];
 
 // Install service worker

@@ -346,6 +346,58 @@ def compute_frame_differences(onset: np.ndarray, apex: np.ndarray,
     return differences
 
 
+def triplet_to_six_channel_flow(
+    onset_rgb: np.ndarray,
+    apex_rgb: np.ndarray,
+    offset_rgb: np.ndarray,
+) -> np.ndarray:
+    """
+    Build the 6-channel motion tensor used across training and inference:
+    [fx_onset→apex, fy_onset→apex, fx_apex→offset, fy_apex→offset, strain1, strain2].
+
+    onset_rgb, apex_rgb, offset_rgb: (H, W, 3) RGB, float in [0,1] or uint8.
+    Returns: float32 array of shape (6, H, W).
+    """
+    def to_gray_u8(rgb: np.ndarray) -> np.ndarray:
+        if rgb.dtype != np.uint8:
+            rgb = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if rgb.ndim == 2:
+            return rgb
+        if rgb.shape[2] == 4:
+            rgb = rgb[:, :, :3]
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    g0 = to_gray_u8(onset_rgb)
+    g1 = to_gray_u8(apex_rgb)
+    g2 = to_gray_u8(offset_rgb)
+
+    extractor = OpticalFlowExtractor(method="farneback")
+    fx1, fy1 = extractor.compute_flow(g0, g1)
+    fx2, fy2 = extractor.compute_flow(g1, g2)
+
+    s1 = compute_strain(fx1.astype(np.float32), fy1.astype(np.float32))
+    s2 = compute_strain(fx2.astype(np.float32), fy2.astype(np.float32))
+
+    stack = np.stack(
+        [
+            fx1.astype(np.float32),
+            fy1.astype(np.float32),
+            fx2.astype(np.float32),
+            fy2.astype(np.float32),
+            s1.astype(np.float32),
+            s2.astype(np.float32),
+        ],
+        axis=0,
+    )
+
+    # Normalize for numerical stability (matches need for SVM + CNN)
+    fmax = float(np.max(np.abs(stack[:4])) + 1e-6)
+    stack[:4] /= fmax
+    smax = float(np.max(stack[4:]) + 1e-6)
+    stack[4:] /= smax
+    return stack
+
+
 if __name__ == "__main__":
     # Test optical flow extraction
     print("Testing Optical Flow Extraction...")

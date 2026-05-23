@@ -18,7 +18,7 @@ ROI Extraction (3 parallel encoders: eyebrows, eyes, mouth)
 ↓ Graph Convolution (ROI interactions)
 ↓ Feature Fusion (768-D combined)
 ↓ AU-aware Soft Boosting
-↓ Classification (4 emotions)
+↓ Classification (5 emotions; matches ``config.NUM_EMOTIONS``)
 """
 
 import torch
@@ -26,11 +26,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 
 # Import FaceSleuth components
-from facesleuth_optical_flow import FaceSleuthOpticalFlow, apply_vertical_bias_to_tensor
+from facesleuth_optical_flow import FaceSleuthOpticalFlow
+from config import NUM_EMOTIONS
 from au_soft_boosting import AUSoftBoosting
 from apex_frame_detection import ApexFrameDetector
 from graph_convolutional_network import GraphConvolutionalNetwork, create_facial_gcn
@@ -68,8 +69,8 @@ class FaceSleuthConfig:
     transformer_num_heads: int = 8
     transformer_num_layers: int = 4
     
-    # Classification
-    num_classes: int = 4
+    # Classification (must match sklearn / CNN label space)
+    num_classes: int = field(default_factory=lambda: int(NUM_EMOTIONS))
     dropout: float = 0.3
     
     def __post_init__(self):
@@ -182,27 +183,36 @@ class FaceSleuthHybridModel(nn.Module):
             max_duration_ms=self.config.max_duration_ms
         )
         
-        # ROI CNN encoders (3 parallel encoders for eyebrows, eyes, mouth)
+        frame_ch = [3] + list(self.config.cnn_channels[1:])
+        flow_ch = [6] + list(self.config.cnn_channels[1:])
+
         self.roi_encoders = nn.ModuleList([
             ROICNNEncoder(
-                in_channels=3,  # RGB frames
+                in_channels=3,
                 feature_dim=self.config.roi_feature_dim,
-                channels=self.config.cnn_channels,
-                dropout=self.config.dropout
+                channels=frame_ch,
+                dropout=self.config.dropout,
             )
             for _ in range(self.config.num_rois)
         ])
-        
-        # Flow encoders (for optical flow)
+
         self.flow_encoders = nn.ModuleList([
             ROICNNEncoder(
-                in_channels=6,  # 6-channel flow (u, v for 3 temporal windows)
+                in_channels=6,
                 feature_dim=self.config.roi_feature_dim,
-                channels=self.config.cnn_channels,
-                dropout=self.config.dropout
+                channels=flow_ch,
+                dropout=self.config.dropout,
             )
             for _ in range(self.config.num_rois)
         ])
+
+        pair_dim = self.config.roi_feature_dim * 2
+        self.roi_temporal_projections = nn.ModuleList(
+            [
+                nn.Linear(pair_dim, self.config.transformer_embed_dim)
+                for _ in range(self.config.num_rois)
+            ]
+        )
         
         # Temporal transformer
         self.temporal_transformer = create_temporal_transformer(
@@ -250,61 +260,56 @@ class FaceSleuthHybridModel(nn.Module):
             elif isinstance(module, nn.Conv2d):
                 nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
     
-    def extract_roi_features(self, frames: torch.Tensor, flows: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _roi_spatial_crop(self, x: torch.Tensor, roi_idx: int) -> torch.Tensor:
+        """Vertical band crops: 0 upper (brows), 1 mid (eyes/nose), 2 lower (mouth)."""
+        if x.dim() < 4:
+            raise ValueError("expected (N, C, H, W)")
+        _, _, H, _W = x.shape
+        if roi_idx == 0:
+            y0, y1 = 0, max(8, int(0.36 * H))
+        elif roi_idx == 1:
+            y0, y1 = int(0.22 * H), int(0.72 * H)
+        else:
+            y0, y1 = int(0.55 * H), H
+        y1 = max(y1, y0 + 4)
+        return x[..., y0:y1, :]
+
+    def extract_roi_features(self, frames: torch.Tensor, flows: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
-        Extract ROI features from frames and flows.
-        
+        Extract ROI features from frames and flows (one spatial band per ROI encoder).
+
         Args:
             frames: Frame tensor (batch_size, seq_len, 3, H, W)
             flows: Flow tensor (batch_size, seq_len, 6, H, W)
-            
+
         Returns:
-            Tuple of (frame_features, flow_features)
+            Tuple of (frame_roi_feature_list, flow_roi_feature_list), length ``num_rois``.
         """
         batch_size, seq_len = frames.size(0), frames.size(1)
-        
-        # Reshape for ROI processing
-        frames_flat = frames.view(-1, *frames.shape[2:])  # (batch*seq_len, 3, H, W)
-        flows_flat = flows.view(-1, *flows.shape[2:])    # (batch*seq_len, 6, H, W)
-        
-        # Extract ROI features (simplified - in practice would use actual ROI extraction)
+        bf, sf = flows.size(0), flows.size(1)
+
+        frames_flat = frames.view(-1, *frames.shape[2:])
+        flows_flat = flows.view(-1, *flows.shape[2:])
+
         frame_roi_features = []
         flow_roi_features = []
-        
-        for encoder in self.roi_encoders:
-            frame_feat = encoder(frames_flat)
-            frame_roi_features.append(frame_feat)
-        
-        for encoder in self.flow_encoders:
-            flow_feat = encoder(flows_flat)
-            flow_roi_features.append(flow_feat)
-        
-        # Reshape back to sequence format
-        frame_roi_features = [
-            feat.view(batch_size, seq_len, -1) for feat in frame_roi_features
-        ]
-        flow_roi_features = [
-            feat.view(batch_size, seq_len, -1) for feat in flow_roi_features
-        ]
-        
+
+        for roi_idx in range(self.config.num_rois):
+            crop_f = self._roi_spatial_crop(frames_flat, roi_idx)
+            crop_fl = self._roi_spatial_crop(flows_flat, roi_idx)
+            frame_roi_features.append(self.roi_encoders[roi_idx](crop_f))
+            flow_roi_features.append(self.flow_encoders[roi_idx](crop_fl))
+
+        frame_roi_features = [feat.view(batch_size, seq_len, -1) for feat in frame_roi_features]
+        flow_roi_features = [feat.view(bf, sf, -1) for feat in flow_roi_features]
+
         return frame_roi_features, flow_roi_features
     
     def apply_vertical_bias_to_flows(self, flows: torch.Tensor) -> torch.Tensor:
         """
-        Apply vertical bias to flow tensors.
-        
-        Args:
-            flows: Flow tensor (batch_size, seq_len, 6, H, W)
-            
-        Returns:
-            Vertical-biased flows
+        Apply vertical bias to flow tensors (delegates to ``FaceSleuthOpticalFlow``).
         """
-        # Apply vertical bias to vertical components (channels 1, 3, 5)
-        biased_flows = flows.clone()
-        for i in [1, 3, 5]:  # Vertical flow components
-            biased_flows[:, :, i, :, :] *= self.config.vertical_emphasis_alpha
-        
-        return biased_flows
+        return self.optical_flow_processor.apply_tensor_vertical_bias_6ch(flows)
     
     def detect_apex_frames(self, flows: torch.Tensor) -> Tuple[torch.Tensor, List[int]]:
         """
@@ -328,7 +333,8 @@ class FaceSleuthHybridModel(nn.Module):
             flow_list = []
             for t in range(seq_len):
                 # Convert 6-channel flow to 2-channel for apex detection
-                flow_2ch = batch_flows[t][[0, 1]]  # Use first temporal window
+                # ApexFrameDetector expects (H, W, 2) with last-dim = (fx, fy)
+                flow_2ch = np.stack([batch_flows[t][0], batch_flows[t][1]], axis=-1)
                 flow_list.append(flow_2ch)
             
             # Detect apex
@@ -368,22 +374,22 @@ class FaceSleuthHybridModel(nn.Module):
         temporal_features = []
         for i in range(self.config.num_rois):
             roi_temporal = torch.cat([frame_roi_features[i], flow_roi_features[i]], dim=-1)
-            # Project to transformer dimension
-            roi_temporal = F.linear(roi_temporal, 
-                                   torch.randn(self.config.transformer_embed_dim, roi_temporal.size(-1)))
-            temporal_features.append(roi_temporal)
+            temporal_features.append(self.roi_temporal_projections[i](roi_temporal))
         
-        # Concatenate ROI features for temporal processing
-        combined_temporal = torch.cat(temporal_features, dim=-1)
+        # Transformer expects (batch, seq, embed_dim); average ROI projections
+        combined_temporal = torch.stack(temporal_features, dim=0).mean(dim=0)
         temporal_context = self.temporal_transformer(combined_temporal)
         
-        # Step 4: Graph Convolution for ROI interactions
-        # Use apex frame features for GCN
+        # Step 4: Graph Convolution — apex-aligned frames + flows (same T for reshape)
         apex_flows, apex_indices = self.detect_apex_frames(biased_flows)
-        _, apex_roi_features, _ = self.extract_roi_features(frames, apex_flows.unsqueeze(1))
-        
-        # GCN processing
-        roi_features_for_gcn = torch.stack(apex_roi_features, dim=1)  # (batch, rois, features)
+        apex_frames = torch.stack(
+            [frames[b, apex_indices[b]] for b in range(batch_size)], dim=0
+        ).unsqueeze(1)
+        _, apex_flow_roi = self.extract_roi_features(apex_frames, apex_flows.unsqueeze(1))
+
+        roi_features_for_gcn = torch.stack(
+            [x.squeeze(1) for x in apex_flow_roi], dim=1
+        )
         gcn_features = self.gcn(roi_features_for_gcn)
         gcn_aggregated = self.gcn.aggregate_rois(gcn_features, method='mean')
         
@@ -397,9 +403,9 @@ class FaceSleuthHybridModel(nn.Module):
         logits = self.fusion_layer(fused_features)
         probabilities = F.softmax(logits, dim=-1)
         
-        # Step 7: AU-aware Soft Boosting
         if au_activations is not None:
-            boosted_probabilities = self.au_booster.apply_soft_boosting(probabilities, au_activations)
+            au_np = au_activations.detach().cpu().numpy() if torch.is_tensor(au_activations) else au_activations
+            boosted_probabilities = self.au_booster.apply_soft_boosting(probabilities, au_np)
         else:
             boosted_probabilities = probabilities
         

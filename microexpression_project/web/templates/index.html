@@ -31,10 +31,10 @@
                         <a class="nav-link" href="#results">Results</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#demo">Demo</a>
+                        <a class="nav-link" href="#demo">Evaluation</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#documentation">Documentation</a>
+                        <a class="nav-link" href="#resources">Resources</a>
                     </li>
                 </ul>
             </div>
@@ -51,20 +51,21 @@
                             Advanced Micro-Expression Recognition
                         </h1>
                         <p class="lead text-white mb-4">
-                            State-of-the-art deep learning system for real-time detection and classification 
-                            of spontaneous facial micro-expressions using hybrid CNN-SVM architecture.
+                            CASME-II–oriented pipeline: hybrid CNN feature extraction plus SVM, with
+                            onset–apex–offset optical flow (6 channels). Episode analysis uses the same
+                            CSV + reg_img protocol as training when data is available; generic uploads use video preprocessing.
                         </p>
                         <div class="d-flex align-items-center gap-3 mb-4">
                             <div class="model-status">
                                 <span class="bg-yellow-100 text-yellow-800 px-3 py-1 rounded-full text-sm font-medium">⏳ Checking Model...</span>
                             </div>
                             <div class="model-type text-white text-sm">
-                                <span class="opacity-75">CNN-SVM Hybrid</span>
+                                <span class="opacity-75">FaceSleuth-enhanced hybrid · 5 classes (incl. Others)</span>
                             </div>
                         </div>
                         <div class="d-flex gap-3">
                             <a href="#demo" class="btn btn-light btn-lg">
-                                <i class="fas fa-play me-2"></i>Try Demo
+                                <i class="fas fa-play me-2"></i>Run evaluation
                             </a>
                             <a href="#system" class="btn btn-outline-light btn-lg">
                                 <i class="fas fa-info-circle me-2"></i>Learn More
@@ -77,18 +78,19 @@
                         <div class="floating-card">
                             <div class="card-body">
                                 <h5 class="card-title">System Performance</h5>
+                                <p class="small text-muted mb-2" id="performanceSourceNote">Loading metrics from the loaded checkpoint…</p>
                                 <div class="performance-metrics">
                                     <div class="metric">
-                                        <span class="metric-value">46.3%</span>
-                                        <span class="metric-label">Accuracy</span>
+                                        <span class="metric-value" id="metricAccuracy">—</span>
+                                        <span class="metric-label">LOSO accuracy (pooled held-out predictions)</span>
                                     </div>
                                     <div class="metric">
-                                        <span class="metric-value">24.8%</span>
-                                        <span class="metric-label">UAR</span>
+                                        <span class="metric-value" id="metricUar">—</span>
+                                        <span class="metric-label">UAR (macro recall, LOSO)</span>
                                     </div>
                                     <div class="metric">
-                                        <span class="metric-value">71.6%</span>
-                                        <span class="metric-label">Happiness Recall</span>
+                                        <span class="metric-value" id="metricHappinessRecall">—</span>
+                                        <span class="metric-label">Happiness recall (LOSO)</span>
                                     </div>
                                 </div>
                             </div>
@@ -104,14 +106,18 @@
         <div class="container">
             <div class="row">
                 <div class="col-lg-12">
-                    <h2 class="text-center mb-5">System Architecture</h2>
+                    <h2 class="text-center mb-5">Model evaluation overview</h2>
+                    <p class="text-center text-muted small mb-4">
+                        Figures from <code>results/model_report/20260414_190052_graphs/</code>
+                    </p>
                 </div>
             </div>
             
             <div class="row">
                 <div class="col-lg-8 mx-auto">
                     <div class="system-diagram">
-                        <img src="system_architecture_flow.png" alt="System Architecture" class="img-fluid rounded shadow">
+                        <h4 class="text-center h6 text-muted mb-2">Per-subject accuracy</h4>
+                        <img src="/model-report-graphs/per_subject_accuracy.png" alt="Per-subject accuracy" class="img-fluid rounded shadow">
                     </div>
                 </div>
             </div>
@@ -122,8 +128,12 @@
                         <div class="feature-icon">
                             <i class="fas fa-brain"></i>
                         </div>
-                        <h4>Hybrid Architecture</h4>
-                        <p>CNN feature extraction combined with SVM classification for optimal performance and interpretability.</p>
+                        <h4>Hybrid architecture</h4>
+                        <p>
+                            A <strong>HybridFlowCNN</strong> produces 128-D deep features, concatenated with handcrafted motion (48-D),
+                            AU-aligned strain statistics (40-D), AU9/AU10 regions (12-D), and FaceSleuth vertical-flow cues (4-D)—about
+                            <strong>232-D</strong> per clip. A <strong>StandardScaler + SVM</strong> (RBF, class-balanced) performs classification on that vector.
+                        </p>
                     </div>
                 </div>
                 <div class="col-md-4">
@@ -131,8 +141,13 @@
                         <div class="feature-icon">
                             <i class="fas fa-clock"></i>
                         </div>
-                        <h4>Temporal Dynamics</h4>
-                        <p>Preserves onset-apex-offset motion patterns for accurate micro-expression analysis.</p>
+                        <h4>Temporal protocol</h4>
+                        <p>
+                            <strong>Onset → apex → offset</strong> RGB triplets define the micro-expression window. Optical flow is
+                            <strong>6 channels</strong> (Farneback displacement plus strain maps). CASME-II runs use
+                            <code>casme2_labels.csv</code> frame indices with <code>reg_img</code> crops when available; generic uploads use
+                            <strong>VideoPreprocessor</strong> (motion-guided sampling and face crop).
+                        </p>
                     </div>
                 </div>
                 <div class="col-md-4">
@@ -140,8 +155,12 @@
                         <div class="feature-icon">
                             <i class="fas fa-users"></i>
                         </div>
-                        <h4>Subject Independence</h4>
-                        <p>LOS0 evaluation ensures unbiased performance across different individuals.</p>
+                        <h4>Subject independence (LOSO)</h4>
+                        <p>
+                            Evaluation uses <strong>leave-one-subject-out (LOSO)</strong> on the hybrid features: the scaler and SVM are refit on all
+                            subjects except the held-out one. The optional <strong>LOSO bundle</strong> checkpoint mirrors that for inference when
+                            subject id is known. The CNN backbone is trained on the full CASME-II set (small-<em>n</em> protocol); headline metrics refer to LOSO SVM behaviour.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -160,14 +179,14 @@
             <div class="row">
                 <div class="col-lg-6">
                     <div class="result-card">
-                        <h4>Confusion Matrix</h4>
-                        <img src="confusion_matrix_comprehensive.png" alt="Confusion Matrix" class="img-fluid rounded">
+                        <h4>Confusion matrix (counts)</h4>
+                        <img src="/model-report-graphs/confusion_matrix_counts.png" alt="Confusion matrix counts" class="img-fluid rounded">
                     </div>
                 </div>
                 <div class="col-lg-6">
                     <div class="result-card">
-                        <h4>LOS0 Evaluation Protocol</h4>
-                        <img src="loso_evaluation_protocol.png" alt="LOS0 Protocol" class="img-fluid rounded">
+                        <h4>Confusion matrix (row-normalized)</h4>
+                        <img src="/model-report-graphs/confusion_matrix_row_normalized.png" alt="Confusion matrix row-normalized" class="img-fluid rounded">
                     </div>
                 </div>
             </div>
@@ -175,26 +194,68 @@
             <div class="row mt-4">
                 <div class="col-lg-6">
                     <div class="result-card">
-                        <h4>Temporal Dynamics</h4>
-                        <img src="temporal_dynamics_analysis.png" alt="Temporal Analysis" class="img-fluid rounded">
+                        <h4>One-vs-rest ROC</h4>
+                        <img src="/model-report-graphs/roc_ovr.png" alt="ROC curves one-vs-rest" class="img-fluid rounded">
                     </div>
                 </div>
                 <div class="col-lg-6">
                     <div class="result-card">
-                        <h4>Feature Analysis</h4>
-                        <img src="feature_analysis_comprehensive.png" alt="Feature Analysis" class="img-fluid rounded">
+                        <h4>Per-class F1</h4>
+                        <img src="/model-report-graphs/per_class_f1.png" alt="Per-class F1 scores" class="img-fluid rounded">
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-lg-4">
+                    <div class="result-card">
+                        <h4>Precision–recall (OvR)</h4>
+                        <img src="/model-report-graphs/pr_ovr.png" alt="Precision-recall one-vs-rest" class="img-fluid rounded">
+                    </div>
+                </div>
+                <div class="col-lg-4">
+                    <div class="result-card">
+                        <h4>Calibration (top-1)</h4>
+                        <img src="/model-report-graphs/calibration_top1.png" alt="Calibration reliability" class="img-fluid rounded">
+                    </div>
+                </div>
+                <div class="col-lg-4">
+                    <div class="result-card">
+                        <h4>Confusion matrix (col-normalized)</h4>
+                        <img src="/model-report-graphs/confusion_matrix_col_normalized.png" alt="Confusion matrix column-normalized" class="img-fluid rounded">
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-lg-6">
+                    <div class="result-card">
+                        <h4>Per-class precision</h4>
+                        <img src="/model-report-graphs/per_class_precision.png" alt="Per-class precision" class="img-fluid rounded">
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="result-card">
+                        <h4>Per-class recall</h4>
+                        <img src="/model-report-graphs/per_class_recall.png" alt="Per-class recall" class="img-fluid rounded">
                     </div>
                 </div>
             </div>
         </div>
     </section>
 
-    <!-- Demo Section -->
+    <!-- Demo / evaluation (protocol vs exploratory) -->
     <section id="demo" class="py-5">
         <div class="container">
             <div class="row">
-                <div class="col-lg-12">
-                    <h2 class="text-center mb-5">Interactive Demo</h2>
+                <div class="col-lg-10 mx-auto">
+                    <h2 class="text-center mb-3">Interactive evaluation</h2>
+                    <p class="text-center text-muted small mb-4">
+                        Two inference regimes are supported: <strong>protocol-matched CASME-II</strong> (onset/apex/offset from the project label file
+                        and registered-region images), and <strong>exploratory video</strong> (decoded pixels with motion-guided subsampling).
+                        Reported training metrics use leave-one-subject-out (LOSO) on hybrid features; headline class probabilities use
+                        <code>predict_proba</code> from the fitted SVM pipeline.
+                    </p>
                 </div>
             </div>
 
@@ -204,30 +265,75 @@
                         <div class="upload-area" id="uploadArea">
                             <div class="upload-content">
                                 <i class="fas fa-cloud-upload-alt fa-3x mb-3"></i>
-                                <h4>Upload Video for Real Analysis</h4>
-                                <p>Drag and drop a video file or click to browse</p>
+                                <h4 class="h5">Video upload (exploratory or CASME-linked)</h4>
+                                <p class="small mb-2">Select a short clip (e.g. AVI, MP4). The backend maps the request to tensors for the hybrid CNN–SVM model.</p>
+                                <p class="small text-muted mb-2">
+                                    <strong>Protocol alignment.</strong> When <code>subject_id</code> and <code>episode_id</code> can be resolved (path under
+                                    <code>data/predict/subXX/</code>, filename pattern <code>subXX_EP…</code>, optional form fields, or a unique episode match in
+                                    <code>casme2_labels.csv</code>), inference follows the <strong>same preprocessing contract as training</strong>:
+                                    official onset, apex, and offset frame indices with co-registered <code>reg_img</code> crops and 6-channel optical flow.
+                                    The uploaded container may then be <em>ignored for pixels</em> in favor of the dataset crops—this is intentional for
+                                    reproducibility, not a bug.
+                                </p>
+                                <div class="form-check small mb-2 text-start">
+                                    <input class="form-check-input" type="checkbox" id="forceVideoPixels">
+                                    <label class="form-check-label" for="forceVideoPixels">
+                                        <strong>Ablation:</strong> force prediction from decoded video pixels only (disables <code>reg_img</code> / CSV bridge;
+                                        useful for out-of-distribution clips or sanity checks).
+                                    </label>
+                                </div>
+                                <div class="d-flex flex-wrap align-items-center gap-2 small mb-2 text-start">
+                                    <label for="maxVideoFrames" class="mb-0">Max frames (long clips, video-only path)</label>
+                                    <select id="maxVideoFrames" class="form-select form-select-sm" style="width: auto">
+                                        <option value="64" selected>64</option>
+                                        <option value="96">96</option>
+                                        <option value="128">128</option>
+                                    </select>
+                                </div>
                                 <div class="model-status mb-3">
-                                    <small class="text-muted">Real CNN-SVM model predictions</small>
+                                    <small class="text-muted">Classifier: SVM on 232-D hybrid vector · UI bars from <code>predict_proba</code></small>
                                 </div>
                                 <input type="file" id="videoUpload" accept="video/*" class="d-none">
                                 <button class="btn btn-primary" onclick="document.getElementById('videoUpload').click()">
-                                    <i class="fas fa-upload me-2"></i>Choose File
+                                    <i class="fas fa-upload me-2"></i>Choose file
                                 </button>
+                                <hr class="my-4">
+                                <h5 class="mb-2">CASME-II episode query (gold timing + reg_img)</h5>
+                                <p class="small text-muted mb-3">
+                                    Directly specifies <code>subject_id</code> and <code>episode_id</code> for a row in <code>data/labels/casme2_labels.csv</code>.
+                                    This path is <strong>not</strong> equivalent to an arbitrary internet video: it reproduces the laboratory coding protocol
+                                    (onset–apex–offset) on the released cropped sequence. Ground-truth emotion from the label file may be shown for verification when available.
+                                </p>
+                                <div class="row g-2 align-items-end justify-content-center">
+                                    <div class="col-auto">
+                                        <label class="form-label small mb-0" for="casmeSubject">Subject ID</label>
+                                        <input type="text" class="form-control form-control-sm" id="casmeSubject" placeholder="sub01" style="width: 7rem;">
+                                    </div>
+                                    <div class="col-auto">
+                                        <label class="form-label small mb-0" for="casmeEpisode">Episode ID</label>
+                                        <input type="text" class="form-control form-control-sm" id="casmeEpisode" placeholder="EP02_01f" style="width: 9rem;">
+                                    </div>
+                                    <div class="col-auto">
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="casmeAnalyzeBtn">
+                                            <i class="fas fa-database me-1"></i>Run episode analysis
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
                         <div class="analysis-results d-none" id="analysisResults">
-                            <h4>Real Analysis Results</h4>
+                            <h4 class="h5">Output summary</h4>
                             <div class="result-summary">
                                 <div class="emotion-prediction">
-                                    <h5>Predicted Emotion:</h5>
+                                    <h5 class="h6 text-muted">Predicted class (five-way objective scheme)</h5>
                                     <div class="emotion-badge" id="emotionBadge">
                                         <span class="emotion-name">-</span>
                                         <span class="confidence">-</span>
                                     </div>
                                 </div>
                                 <div class="emotion-breakdown">
-                                    <h5>Emotion Probabilities:</h5>
+                                    <h5 class="h6 text-muted">Posterior probabilities (SVM Platt scaling)</h5>
                                     <div class="probability-bars">
                                         <div class="probability-item">
                                             <span>Happiness</span>
@@ -257,17 +363,24 @@
                                             </div>
                                             <span>0%</span>
                                         </div>
+                                        <div class="probability-item">
+                                            <span>Others</span>
+                                            <div class="progress">
+                                                <div class="progress-bar bg-secondary" style="width: 0%"></div>
+                                            </div>
+                                            <span>0%</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                             
                             <!-- Model Information -->
                             <div class="model-info mt-4 p-3 bg-blue-50 rounded-lg">
-                                <h6 class="text-sm font-semibold text-blue-800 mb-2">Model Information</h6>
+                                <h6 class="text-sm font-semibold text-blue-800 mb-2">Run metadata</h6>
                                 <div class="technical-details text-xs text-blue-600">
-                                    <div>Type: <span id="modelType">CNN-SVM Hybrid</span></div>
-                                    <div>Features: <span id="modelFeatures">224 dimensions</span></div>
-                                    <div>Evaluation: <span id="modelEvaluation">LOS0</span></div>
+                                    <div>Backbone / head: <span id="modelType">Hybrid CNN features + linear SVM</span></div>
+                                    <div>Feature dimension: <span id="modelFeatures">232 dimensions (FaceSleuth hybrid)</span></div>
+                                    <div>Evaluation context: <span id="modelEvaluation">LOSO SVM at train time; optional LOSO bundle at inference</span></div>
                                 </div>
                             </div>
                         </div>
@@ -277,50 +390,100 @@
         </div>
     </section>
 
-    <!-- Documentation Section -->
-    <section id="documentation" class="py-5 bg-light">
+    <!-- Resources: reproduction, evaluation, data policy -->
+    <section id="resources" class="py-5 bg-light">
         <div class="container">
             <div class="row">
-                <div class="col-lg-12">
-                    <h2 class="text-center mb-5">Documentation & Resources</h2>
+                <div class="col-lg-10 mx-auto">
+                    <h2 class="text-center mb-3">Reproduction &amp; documentation</h2>
+                    <p class="text-center text-muted small mb-4">
+                        Run commands from the <strong>repository root</strong> (<code>microexpression_project/</code>) with Python able to import
+                        <code>src/</code> (the Flask app and scripts add it automatically; for ad-hoc shells set <code>PYTHONPATH</code> to include
+                        <code>src</code>). For publication-quality numbers, distinguish <strong>in-sample</strong> checks from
+                        <strong>subject-held-out (LOSO)</strong> evaluation on the hybrid feature matrix. See also
+                        <code>web/README.md</code>, <code>inference/README.md</code>, and <code>deployment/README.md</code>.
+                    </p>
                 </div>
             </div>
 
-            <div class="row">
+            <div class="row g-4">
                 <div class="col-md-4">
-                    <div class="doc-card">
+                    <div class="doc-card h-100">
                         <div class="doc-icon">
-                            <i class="fas fa-file-pdf"></i>
+                            <i class="fas fa-dumbbell"></i>
                         </div>
-                        <h5>Technical Documentation</h5>
-                        <p>Comprehensive 50-page technical specification and implementation details.</p>
-                        <a href="../docs/Micro_Expression_Recognition_Enhanced_Documentation.pdf" class="btn btn-outline-primary" target="_blank">
-                            <i class="fas fa-download me-2"></i>Download PDF
-                        </a>
+                        <h5>Training &amp; checkpoints</h5>
+                        <p class="small mb-2">
+                            Fits the hybrid CNN feature extractor on labelled CASME-II triplets (onset–apex–offset) and then the SVM head; reports
+                            LOSO accuracy and macro recall (UAR) on the SVM stage. Use only with a lawful copy of CASME-II and the corresponding
+                            processed <code>reg_img</code> tree.
+                        </p>
+                        <pre class="small bg-white border rounded p-2 mb-2 text-start">python scripts/train_with_real_data.py --data_root data/casme2</pre>
+                        <p class="small text-muted mb-0">
+                            Artifacts: <code>models/real_data_model_*.pkl</code> + metadata JSON. For web inference aligned with pooled LOSO behaviour,
+                            build <code>loso_bundle_model_*.pkl</code> via <code>scripts/build_loso_checkpoint.py</code>.
+                        </p>
                     </div>
                 </div>
                 <div class="col-md-4">
-                    <div class="doc-card">
+                    <div class="doc-card h-100">
                         <div class="doc-icon">
-                            <i class="fas fa-code"></i>
+                            <i class="fas fa-film"></i>
                         </div>
-                        <h5>Source Code</h5>
-                        <p>Complete implementation with training scripts and evaluation tools.</p>
-                        <a href="#" class="btn btn-outline-primary">
-                            <i class="fab fa-github me-2"></i>View on GitHub
-                        </a>
+                        <h5>Batch protocol scoring</h5>
+                        <p class="small mb-2">
+                            Evaluates files under <code>data/predict/</code> using the same CASME bridge as the web UI when subject and episode can be resolved.
+                            Suitable for generating supplementary tables; outputs are JSON for downstream statistical analysis.
+                        </p>
+                        <pre class="small bg-white border rounded p-2 mb-2 text-start">python scripts/evaluate_predict_videos.py</pre>
+                        <p class="small text-muted mb-0">Writes result JSON under <code>data/predict/</code> (paths depend on script defaults).</p>
                     </div>
                 </div>
                 <div class="col-md-4">
-                    <div class="doc-card">
+                    <div class="doc-card h-100">
                         <div class="doc-icon">
                             <i class="fas fa-database"></i>
                         </div>
-                        <h5>Dataset</h5>
-                        <p>CASME-II dataset information and preprocessing procedures.</p>
-                        <a href="http://casme.psych.ac.cn/casme/e1" class="btn btn-outline-primary" target="_blank">
-                            <i class="fas fa-info-circle me-2"></i>CASME-II Dataset
+                        <h5>Dataset &amp; ethics</h5>
+                        <p class="small mb-2">
+                            CASME-II is a controlled-access spontaneous micro-expression corpus. Cite the official CASME-II papers and respect the
+                            license terms; do not redistribute raw or cropped stimuli outside what your agreement allows.
+                        </p>
+                        <a href="http://casme.psych.ac.cn/casme/e1" class="btn btn-outline-primary" target="_blank" rel="noopener noreferrer">
+                            <i class="fas fa-external-link-alt me-2"></i>CASME-II information
                         </a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row g-4 mt-1">
+                <div class="col-md-6">
+                    <div class="doc-card h-100">
+                        <div class="doc-icon">
+                            <i class="fas fa-chart-area"></i>
+                        </div>
+                        <h5>Held-out predictions &amp; figures</h5>
+                        <p class="small mb-2">
+                            Generate pooled LOSO predictions JSON, confusion matrices, and the full evaluation figure set used in this report section.
+                        </p>
+                        <pre class="small bg-white border rounded p-2 mb-2 text-start">python scripts/generate_loso_predictions.py
+python scripts/generate_confusion_matrix.py
+python scripts/generate_model_graphs.py</pre>
+                        <p class="small text-muted mb-0">Outputs under <code>data/predict/</code> and <code>results/model_report/</code> (see script <code>--help</code>).</p>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="doc-card h-100">
+                        <div class="doc-icon">
+                            <i class="fas fa-flask"></i>
+                        </div>
+                        <h5>Reporting checklist</h5>
+                        <ul class="small text-muted mb-0 ps-3">
+                            <li>State whether metrics are <strong>LOSO</strong> (subject-independent) or in-sample.</li>
+                            <li>Report <strong>UAR</strong> (macro recall) alongside accuracy for class imbalance.</li>
+                            <li>Describe preprocessing: O–A–O triplets, 6-channel flow, and any video-only ablation.</li>
+                            <li>Clarify that UI probabilities come from the SVM’s <code>predict_proba</code> calibration, not a separate Bayesian model.</li>
+                        </ul>
                     </div>
                 </div>
             </div>

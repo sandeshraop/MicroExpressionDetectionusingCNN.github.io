@@ -1,0 +1,2 @@
+# If upstream ever tracks files under data/predict, prefer the local branch on merge.
+microexpression_project/data/predict/** merge=ours

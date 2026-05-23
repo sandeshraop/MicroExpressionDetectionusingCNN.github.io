@@ -7,19 +7,30 @@ import sys
 import os
 from pathlib import Path
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError, AttributeError):
+        pass
+
+# Paths relative to this file (works from any cwd)
+_web_dir = Path(__file__).resolve().parent
+project_root = _web_dir.parent
 sys.path.append(str(project_root))
+
 
 def main():
     """Main startup function"""
     print("🚀 Micro-Expression Recognition Web Application")
     print("=" * 50)
-    
-    # Check if we're in the right directory
-    if not Path("templates/index.html").exists():
+
+    # Flask/static paths expect cwd = web/
+    os.chdir(_web_dir)
+
+    if not (_web_dir / "templates" / "index.html").exists():
         print("❌ Error: templates/index.html not found!")
-        print("Please run this script from the 'web' directory")
+        print(f"Expected at: {_web_dir / 'templates' / 'index.html'}")
         sys.exit(1)
     
     # Check requirements

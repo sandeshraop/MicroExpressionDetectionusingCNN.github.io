@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from typing import Dict, Any, List, Tuple, Optional
@@ -12,7 +13,7 @@ from optical_flow_utils import compute_au_aligned_strain_statistics
 from facesleuth_optical_flow import FaceSleuthOpticalFlow
 from au_soft_boosting import AUSoftBoosting, extract_au_activations_from_strain
 from boosting_logger import create_boosting_logger
-from config import NUM_EMOTIONS, EMOTION_DISPLAY_ORDER
+from config import NUM_EMOTIONS, EMOTION_DISPLAY_ORDER, FLOW_CHANNELS
 
 
 class EnhancedHybridModel:
@@ -74,9 +75,19 @@ class EnhancedHybridModel:
         
         # Initialize classifier
         if classifier_type == 'svm':
-            self.classifier = SVC(kernel='rbf', C=1.0, gamma='scale', probability=True, random_state=42)
+            # class_weight='balanced' counters CASME-II skew (e.g. disgust vs happiness counts).
+            self.classifier = SVC(
+                kernel='rbf',
+                C=1.0,
+                gamma='scale',
+                probability=True,
+                random_state=42,
+                class_weight='balanced',
+            )
         elif classifier_type == 'rf':
-            self.classifier = RandomForestClassifier(n_estimators=100, random_state=42)
+            self.classifier = RandomForestClassifier(
+                n_estimators=100, random_state=42, class_weight='balanced_subsample'
+            )
         elif classifier_type == 'xgb':
             try:
                 from xgboost import XGBClassifier
@@ -114,7 +125,14 @@ class EnhancedHybridModel:
             features = self.feature_extractor(frames, flows)
         
         return features.cpu().numpy()
-    
+
+    @staticmethod
+    def _frames_for_cnn(frames: torch.Tensor) -> torch.Tensor:
+        """Use apex frame (middle of triplet) for spatial CNN; pass through single-frame input."""
+        if frames.dim() == 5:
+            return frames[:, 1, :, :, :].contiguous()
+        return frames
+
     def extract_facesleuth_vertical_features(self, flows: torch.Tensor) -> np.ndarray:
         """
         Extract FaceSleuth vertical dominance features from flow tensor.
@@ -201,13 +219,15 @@ class EnhancedHybridModel:
         Returns:
             Biased flow tensor
         """
+        squeeze = flows.dim() == 3
+        if squeeze:
+            flows = flows.unsqueeze(0)
         biased_flows = flows.clone()
-        
-        # Apply vertical bias to vertical components (channels 1, 3, 5)
-        for i in [1, 3, 5]:  # Vertical flow components
-            biased_flows[:, i, :, :] *= self.vertical_alpha
-        
-        return biased_flows
+
+        for ch in (1, 3, 5):
+            biased_flows[:, ch, :, :] *= self.vertical_alpha
+
+        return biased_flows.squeeze(0) if squeeze else biased_flows
     
     def extract_handcrafted_features(self, frames: torch.Tensor) -> np.ndarray:
         """
@@ -222,16 +242,19 @@ class EnhancedHybridModel:
         Returns:
             Enhanced handcrafted features (48-D)
         """
-        # Handle both 3D and 4D tensors
+        if frames.dim() == 4:
+            f = frames
+            frames = torch.stack([f, f, f], dim=1)
+
         if frames.dim() == 3:
-            frames = frames.unsqueeze(0)  # Add batch dimension
-        
+            frames = frames.unsqueeze(0)
+
         batch_size = frames.shape[0]
-        
+
         handcrafted_features = []
-        
-        for i in range(batch_size):
-            frame_seq = frames[i]  # (3, 64, 64)
+
+        for bi in range(batch_size):
+            frame_seq = frames[bi]
             
             # Extract individual frames
             onset = frame_seq[0]
@@ -268,12 +291,12 @@ class EnhancedHybridModel:
             region_h, region_w = h // 3, w // 3
             
             for diff in [diff_onset_apex, diff_apex_offset, diff_onset_offset]:
-                for i in range(3):
-                    for j in range(3):
-                        y_start = i * region_h
-                        y_end = (i + 1) * region_h if i < 2 else h
-                        x_start = j * region_w
-                        x_end = (j + 1) * region_w if j < 2 else w
+                for gi in range(3):
+                    for gj in range(3):
+                        y_start = gi * region_h
+                        y_end = (gi + 1) * region_h if gi < 2 else h
+                        x_start = gj * region_w
+                        x_end = (gj + 1) * region_w if gj < 2 else w
                         
                         region_diff = diff[y_start:y_end, x_start:x_end]
                         features.append(torch.mean(torch.abs(region_diff)).item())
@@ -296,7 +319,7 @@ class EnhancedHybridModel:
             flows: Flow tensor (batch_size, 6, 64, 64) or (6, 64, 64)
         
         Returns:
-            AU9/AU10 specific statistics as numpy array (8-D)
+            AU9/AU10 specific statistics as numpy array (12-D)
         """
         # Handle both 3D and 4D tensors
         if flows.dim() == 3:
@@ -307,8 +330,8 @@ class EnhancedHybridModel:
         
         for i in range(batch_size):
             # Extract strain components (last 2 channels)
-            strain1 = flows[i, 4, :, :].numpy()  # onset→apex strain
-            strain2 = flows[i, 5, :, :].numpy()  # apex→offset strain
+            strain1 = flows[i, 4, :, :].detach().cpu().float().numpy()  # onset→apex strain
+            strain2 = flows[i, 5, :, :].detach().cpu().float().numpy()  # apex→offset strain
             
             # AU9 region: nose area (rows 20:35, cols 25:40)
             au9_region1 = strain1[20:35, 25:40]
@@ -324,7 +347,7 @@ class EnhancedHybridModel:
             au10_stats1 = [np.mean(au10_region1), np.std(au10_region1), np.max(au10_region1)]
             au10_stats2 = [np.mean(au10_region2), np.std(au10_region2), np.max(au10_region2)]
             
-            # Combine all AU9/AU10 statistics (8 features)
+            # Combine all AU9/AU10 statistics (12 features)
             combined_stats = au9_stats1 + au9_stats2 + au10_stats1 + au10_stats2
             au9_au10_stats.append(combined_stats)
         
@@ -454,39 +477,33 @@ class EnhancedHybridModel:
         Extract all features: handcrafted + AU-aligned strain statistics + CNN features + FaceSleuth.
         
         Args:
-            frames: Frame tensor (batch_size, 3, 64, 64)
+            frames: (batch, 3, 3, 64, 64) onset/apex/offset RGB or (batch, 3, 64, 64) apex-only
             flows: Flow tensor (batch_size, 6, 64, 64)
         
         Returns:
             Combined feature vector (~220-D with FaceSleuth)
         """
-        # Extract different feature types
-        handcrafted = self.extract_handcrafted_features(frames)  # (batch_size, 48)
-        au_strain_stats = self.extract_au_aligned_strain_statistics(flows.cpu())  # (batch_size, 40)
-        au9_au10_stats = self.extract_au9_au10_stats(flows)  # (batch_size, 8)
-        cnn_features = self.extract_cnn_features(frames, flows)  # (batch_size, 128)
-        
-        # FIX #1: Add FaceSleuth vertical dominance features
+        frames_cnn = self._frames_for_cnn(frames)
+        handcrafted = self.extract_handcrafted_features(frames)
+        au_strain_stats = self.extract_au_aligned_strain_statistics(flows.cpu())
+        au9_au10_stats = self.extract_au9_au10_stats(flows)
+        cnn_features = self.extract_cnn_features(frames_cnn, flows)
+
         if self.use_facesleuth and hasattr(self, 'facesleuth_processor'):
-            facesleuth_features = self.extract_facesleuth_vertical_features(flows)  # (batch_size, 4)
-            
-            # ✅ ENHANCED FEATURE CONCATENATION with FaceSleuth
-            # Final SVM feature vector: [CNN + handcrafted + AU_aligned + AU9_AU10 + FaceSleuth]
+            facesleuth_features = self.extract_facesleuth_vertical_features(flows)
             combined_features = np.concatenate([
-                cnn_features, 
-                handcrafted, 
-                au_strain_stats, 
+                cnn_features,
+                handcrafted,
+                au_strain_stats,
                 au9_au10_stats,
-                facesleuth_features  # NEW: FaceSleuth vertical features
+                facesleuth_features,
             ], axis=1)
-            
-            print(f"✅ FaceSleuth features added: {facesleuth_features.shape[1]}D")
-            print(f"🎯 Total feature dimension: {combined_features.shape[1]}D")
         else:
-            # Original concatenation without FaceSleuth
-            combined_features = np.concatenate([cnn_features, handcrafted, au_strain_stats, au9_au10_stats], axis=1)
-        
-        return combined_features  # (batch_size, 224) or 228 with FaceSleuth
+            combined_features = np.concatenate(
+                [cnn_features, handcrafted, au_strain_stats, au9_au10_stats], axis=1
+            )
+
+        return np.nan_to_num(combined_features, nan=0.0, posinf=0.0, neginf=0.0)
     
     def fit(self, frames_list: List[torch.Tensor], flows_list: List[torch.Tensor], 
             labels: np.ndarray, train_cnn: bool = True) -> None:
@@ -517,19 +534,14 @@ class EnhancedHybridModel:
             
             features = self.extract_all_features(frames, flows)
             all_features.append(features)
-        
-        # Concatenate all features
-        all_features = torch.stack(all_features)
-        
-        print(f"Extracted features shape: {all_features.shape}")
+
+        all_features_np = np.vstack(all_features)
+
+        print(f"Extracted features shape: {all_features_np.shape}")
         print(f"Labels shape: {labels.shape}")
-        print(f"Feature breakdown: 48 (handcrafted) + 40 (AU-aligned strain stats) + 128 (CNN) = {all_features.shape[1]} total")
-        
-        # Convert to numpy for sklearn compatibility
-        all_features_np = all_features.cpu().numpy()
-        labels_np = labels
-        
-        # Fit the pipeline
+        print(f"Feature dimension: {all_features_np.shape[1]}")
+        labels_np = np.asarray(labels)
+
         self.pipeline.fit(all_features_np, labels_np)
         self.is_fitted = True
         
@@ -541,27 +553,28 @@ class EnhancedHybridModel:
         import torch.nn as nn
         import torch.optim as optim
         
-        # Prepare training data
         frames_tensor = torch.stack(frames_list)
         flows_tensor = torch.stack(flows_list)
         labels_tensor = torch.tensor(labels)
-        
-        # Verify flow tensor has 6 channels
-        if flows_tensor.shape[1] != 6:
-            raise ValueError(f"Expected 6 channels in flow tensor, got {flows_tensor.shape[1]}")
-        
-        # Create dataset and loader
-        dataset = torch.utils.data.TensorDataset(frames_tensor, flows_tensor, labels_tensor.long())
+
+        if flows_tensor.shape[1] != FLOW_CHANNELS:
+            raise ValueError(
+                f"Expected {FLOW_CHANNELS} channels in flow tensor, got {flows_tensor.shape[1]}"
+            )
+
+        if frames_tensor.dim() == 5:
+            frames_cnn_tensor = frames_tensor[:, 1, :, :, :].contiguous()
+        else:
+            frames_cnn_tensor = frames_tensor
+
+        dataset = torch.utils.data.TensorDataset(frames_cnn_tensor, flows_tensor, labels_tensor.long())
         loader = torch.utils.data.DataLoader(dataset, batch_size=8, shuffle=True)
-        
-        # Set up training
+
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.feature_extractor.parameters(), lr=0.001)
-        
-        # Add temporary linear head for CNN training
-        # Get feature dimension by forward pass
+
         with torch.no_grad():
-            sample_frames = frames_tensor[:1]
+            sample_frames = frames_cnn_tensor[:1]
             sample_flows = flows_tensor[:1]
             features = self.feature_extractor(sample_frames, sample_flows)
             feature_dim = features.shape[1]
@@ -577,8 +590,7 @@ class EnhancedHybridModel:
             
             for batch_frames, batch_flows, batch_labels in loader:
                 optimizer.zero_grad()
-                
-                # Extract features
+
                 outputs = self.feature_extractor(batch_frames, batch_flows)
                 
                 # Apply temporary classification head
@@ -684,7 +696,7 @@ class EnhancedHybridModel:
         
         # Calculate metrics
         accuracy = accuracy_score(labels, predictions)
-        cm = confusion_matrix(labels, predictions, labels=[0,1,2,3])
+        cm = confusion_matrix(labels, predictions, labels=list(range(NUM_EMOTIONS)))
         
         # Get unique labels present in this fold
         unique_labels = sorted(list(set(labels)))
@@ -765,20 +777,26 @@ class EnhancedHybridModel:
         """
         cnn_params = sum(p.numel() for p in self.feature_extractor.parameters())
         
+        # Keep this consistent with the actual feature concatenation in extract_all_features().
+        feature_breakdown = {
+            'cnn_features': 128,
+            'handcrafted': 48,
+            'au_aligned_strain_statistics': 40,
+            'au9_au10_specific': 12,  # AU9/AU10: (mean,std,max) × 2 strains × 2 regions
+        }
+        if self.use_facesleuth:
+            feature_breakdown['facesleuth_vertical'] = 4
+        feature_dim = int(sum(feature_breakdown.values()))
+
         return {
             'model_type': 'EnhancedHybridModel',
             'cnn_model': self.cnn_model,
             'classifier': self.classifier_type,
             'cnn_parameters': cnn_params,
-            'feature_dim': 224,  # 128 + 48 + 40 + 8 (CNN + handcrafted + AU-aligned + AU9_AU10)
-            'feature_breakdown': {
-                'cnn_features': 128,
-                'handcrafted': 48,
-                'au_aligned_strain_statistics': 40,
-                'au9_au10_specific': 8  # Disgust-specific features
-            },
+            'feature_dim': feature_dim,
+            'feature_breakdown': feature_breakdown,
             'is_fitted': self.is_fitted,
-            'architecture': 'CNN(128) + Handcrafted(48) + AU-Aligned(40) + AU9/AU10(8) -> StandardScaler -> SVM'
+            'architecture': 'CNN(128) + Handcrafted(48) + AU-Aligned(40) + AU9/AU10(12) [+ FaceSleuth(4)] -> StandardScaler -> SVM'
         }
 
 

@@ -1,10 +1,9 @@
 # Multi-stage build for micro-expression recognition API
+# Build context: microexpression_project/ (repo folder containing web/, src/, deployment/)
 FROM python:3.9-slim as base
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
     python3-opencv \
@@ -15,18 +14,16 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libgomp1 \
     libgthread-2.0-0 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
+COPY deployment/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Production stage
 FROM python:3.9-slim as production
 
 WORKDIR /app
 
-# Install only runtime dependencies
 RUN apt-get update && apt-get install -y \
     libopencv-dev \
     python3-opencv \
@@ -36,28 +33,24 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from base stage
 COPY --from=base /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
 
-# Copy application code
 COPY . .
 
-# Create necessary directories
 RUN mkdir -p uploads models
 
-# Expose port
 EXPOSE 5000
 
-# Environment variables
 ENV PYTHONPATH=/app/src:/app/inference
-ENV FLASK_APP=web/enhanced_app.py
+ENV FLASK_APP=web/app.py
 ENV FLASK_ENV=production
+ENV FLASK_HOST=0.0.0.0
+ENV FLASK_DEBUG=0
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+    CMD curl -fsS http://127.0.0.1:5000/health || exit 1
 
-# Run the application
-CMD ["python", "web/enhanced_app.py"]
+CMD ["python", "web/app.py"]

@@ -1,0 +1,32 @@
+{
+  "checkpoint_kind": "loso_bundle",
+  "timestamp": "20260414_132506",
+  "model_type": "FaceSleuthEnhancedHybridModel",
+  "training_data": "Real CASME-II cropped images",
+  "evaluation_method": "LOSO SVM (leave-one-subject-out on hybrid features); deployment bundle fits scaler+SVM per held-out subject",
+  "loso_mean_fold_accuracy": 0.8399591823130166,
+  "loso_pooled_accuracy": 0.8622047244094488,
+  "training_accuracy": 0.8622047244094488,
+  "loso_accuracy_std": 0.20220175638254084,
+  "uar": 0.8695023742370418,
+  "happiness_recall": 0.9117647058823529,
+  "per_class_recall": {
+    "happiness": 0.9117647058823529,
+    "surprise": 0.88,
+    "disgust": 0.8548387096774194,
+    "repression": 0.8518518518518519,
+    "others": 0.8490566037735849
+  },
+  "feature_dim": 232,
+  "feature_breakdown": {
+    "cnn_features": 128,
+    "handcrafted": 48,
+    "au_aligned_strain_statistics": 40,
+    "au9_au10_specific": 12,
+    "facesleuth_vertical_features": 4,
+    "total_vector_dim": 232
+  },
+  "training_samples": 254,
+  "metadata_note": "training_accuracy is pooled LOSO accuracy (each sample classified by the pipeline trained without that subject). loso_mean_fold_accuracy is the mean of per-subject fold accuracies from training run real_data_model_20260414_085233. UAR and per-class recall are from the same pooled LOSO prediction pass on 254 CASME-II samples (data/casme2 + casme2_labels.csv).",
+  "paired_training_metadata": "real_data_model_metadata_20260414_085233.json"
+}

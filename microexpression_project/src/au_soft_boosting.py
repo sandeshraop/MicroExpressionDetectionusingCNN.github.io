@@ -18,6 +18,8 @@ import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 
+from config import EMOTION_LABELS
+
 
 @dataclass
 class AUConfiguration:
@@ -49,14 +51,22 @@ class AUSoftBoosting:
     Index i corresponds to AUi for standard FACS AUs
     """
     
-    def __init__(self, lambda_boost: float = 0.3, uncertainty_threshold: float = 0.6):
+    def __init__(
+        self,
+        lambda_boost: float = 0.3,
+        uncertainty_threshold: float = 0.6,
+        confidence_threshold: Optional[float] = None,
+    ):
         """
         Initialize AU Soft Boosting
-        
+
         Args:
             lambda_boost: Boosting strength (0.0-1.0)
             uncertainty_threshold: Apply boosting only if max_prob < threshold
+            confidence_threshold: Alias for uncertainty_threshold (FaceSleuth hybrid API)
         """
+        if confidence_threshold is not None:
+            uncertainty_threshold = float(confidence_threshold)
         self.lambda_boost = lambda_boost
         self.uncertainty_threshold = uncertainty_threshold
         
@@ -65,15 +75,16 @@ class AUSoftBoosting:
             1: 1, 2: 2, 4: 4, 5: 5, 6: 6, 9: 9, 10: 10, 12: 12, 15: 15, 16: 16, 25: 25, 26: 26
         }
         
-        # Emotion-AU patterns (FACS-based)
+        # Emotion-AU patterns (FACS-based). Keys must match config.EMOTION_LABELS names.
         self.EMOTION_AU_PATTERNS = {
-            'happiness': [6, 12],      # Lip corner puller + Dimpler
-            'disgust': [9, 15, 16],   # Nose wrinkler + Lip corner depressor + Lower lip depressor
-            'surprise': [1, 2, 5, 26], # Inner/outer brow raiser + Upper lid raiser + Jaw drop
-            'suppression': [],         # Weak conflicting AU patterns (computed separately)
+            'happiness': [6, 12],  # Cheek raiser + lip corner puller
+            'surprise': [1, 2, 5, 26],
+            'disgust': [9, 15, 16],
+            'repression': [],  # weak / conflicting AU proxy (see _compute_repression_au_score)
+            'others': [],
         }
-        
-        self.emotions = list(self.EMOTION_AU_PATTERNS.keys())
+        # Order must match model probabilities: indices 0..N-1 per ``EMOTION_LABELS`` numeric values
+        self.prob_emotion_order = [e for e, _ in sorted(EMOTION_LABELS.items(), key=lambda kv: kv[1])]
     
     def compute_emotion_au_weights(self, au_activations: np.ndarray) -> Dict[str, float]:
         """
@@ -87,13 +98,15 @@ class AUSoftBoosting:
         """
         emotion_weights = {}
         
-        for emotion in self.emotions:
-            pattern_aus = self.EMOTION_AU_PATTERNS[emotion]
+        for emotion in self.prob_emotion_order:
+            pattern_aus = self.EMOTION_AU_PATTERNS.get(emotion, [])
             
-            if emotion == 'suppression':
-                # Special case: suppression is characterized by weak conflicting AU patterns
-                # Look for weak activations across multiple AUs
-                emotion_weights[emotion] = self._compute_suppression_score(au_activations)
+            if emotion == 'repression':
+                emotion_weights[emotion] = self._compute_repression_au_score(au_activations)
+            elif emotion == 'others':
+                emotion_weights[emotion] = float(
+                    max(0.0, 1.0 - self._compute_repression_au_score(au_activations))
+                )
             else:
                 # Standard case: product of relevant AU activations
                 if pattern_aus:
@@ -111,11 +124,9 @@ class AUSoftBoosting:
         
         return emotion_weights
     
-    def _compute_suppression_score(self, au_activations: np.ndarray) -> float:
+    def _compute_repression_au_score(self, au_activations: np.ndarray) -> float:
         """
-        Compute repression score based on suppression patterns.
-        
-        This represents expression regulation/suppression state, not an emotion.
+        Proxy score for repression / suppression-style dynamics from AU strain proxies.
         """
         # Look for weak activations across happiness and disgust AUs
         happiness_aus = [6, 12]  # Lip corner puller + Dimpler
@@ -163,13 +174,23 @@ class AUSoftBoosting:
         if uncertainty is not None:
             uncertainty_threshold = uncertainty
             
-        # Convert to probabilities if needed
-        if raw_scores.dim() == 2 and raw_scores.size(1) > 1:
-            # Multiple classes - use softmax
-            probabilities = torch.softmax(raw_scores, dim=1)
-        else:
-            # Single class or already probabilities
-            probabilities = raw_scores
+        # Convert to probabilities if needed.
+        # Research correctness: avoid applying softmax to something that is already probabilities.
+        scores = raw_scores
+        if scores.dim() == 1:
+            scores = scores.unsqueeze(0)
+        if scores.dim() != 2 or scores.size(1) <= 1:
+            raise ValueError(f"expected (B, C) scores, got shape {tuple(raw_scores.shape)}")
+
+        row_sums = scores.sum(dim=1)
+        looks_like_proba = (
+            torch.all(scores >= 0)
+            and torch.all(scores <= 1)
+            and torch.all(torch.isfinite(scores))
+            and torch.all(torch.isfinite(row_sums))
+            and torch.all(torch.abs(row_sums - 1.0) < 1e-3)
+        )
+        probabilities = scores if looks_like_proba else torch.softmax(scores, dim=1)
         
         max_prob, predicted_class = torch.max(probabilities, dim=1)
         
@@ -187,20 +208,24 @@ class AUSoftBoosting:
         emotion_weights = self.compute_emotion_au_weights(au_activations)
         
         # Convert to tensor
-        weight_tensor = torch.tensor([emotion_weights[emotion] for emotion in self.emotions],
-                                   dtype=probabilities.dtype, device=probabilities.device)
+        weight_tensor = torch.tensor(
+            [emotion_weights.get(emotion, 0.0) for emotion in self.prob_emotion_order],
+            dtype=probabilities.dtype,
+            device=probabilities.device,
+        )
         
         # Apply soft boosting formula
         boosted_scores = probabilities * (1 + self.lambda_boost * weight_tensor)
-        
-        # Renormalize to ensure proper probability distribution
-        boosted_scores = F.softmax(boosted_scores, dim=-1)
+
+        # Renormalize by sum-to-one (NOT softmax). Softmax would distort already-probabilistic scores.
+        boosted_scores = boosted_scores / (boosted_scores.sum(dim=-1, keepdim=True) + 1e-12)
         
         boosting_info = {
             'boosting_applied': True,
             'reason': 'Model uncertain - AU boosting applied',
             'max_probability': max_prob.item(),
             'predicted_class': predicted_class.item(),
+            'uncertainty_threshold': float(uncertainty_threshold),
             'before_scores': probabilities.clone().detach().cpu().numpy(),
             'after_scores': boosted_scores.clone().detach().cpu().numpy(),
             'emotion_weights': emotion_weights,
@@ -210,24 +235,37 @@ class AUSoftBoosting:
         return boosted_scores, boosting_info
     
     def apply_soft_boosting(self, raw_scores: torch.Tensor, au_activations: np.ndarray) -> torch.Tensor:
-        # Convert to probabilities if needed
-        if torch.any(raw_scores < 0):
-            probabilities = F.softmax(raw_scores, dim=-1)
-        else:
-            probabilities = raw_scores
+        scores = raw_scores
+        if scores.dim() == 1:
+            scores = scores.unsqueeze(0)
+        if scores.dim() != 2 or scores.size(1) <= 1:
+            raise ValueError(f"expected (B, C) scores, got shape {tuple(raw_scores.shape)}")
+
+        row_sums = scores.sum(dim=1)
+        looks_like_proba = (
+            torch.all(scores >= 0)
+            and torch.all(scores <= 1)
+            and torch.all(torch.isfinite(scores))
+            and torch.all(torch.isfinite(row_sums))
+            and torch.all(torch.abs(row_sums - 1.0) < 1e-3)
+        )
+        probabilities = scores if looks_like_proba else F.softmax(scores, dim=-1)
         
         # Compute AU-based emotion weights
         emotion_weights = self.compute_emotion_au_weights(au_activations)
         
         # Convert to tensor
-        weight_tensor = torch.tensor([emotion_weights[emotion] for emotion in self.emotions],
-                                   dtype=probabilities.dtype, device=probabilities.device)
+        weight_tensor = torch.tensor(
+            [emotion_weights.get(emotion, 0.0) for emotion in self.prob_emotion_order],
+            dtype=probabilities.dtype,
+            device=probabilities.device,
+        )
         
         # Apply soft boosting formula
         boosted_scores = probabilities * (1 + self.lambda_boost * weight_tensor)
         
-        # Renormalize to ensure proper probability distribution
-        boosted_scores = F.softmax(boosted_scores, dim=-1)
+        # Renormalize by sum-to-one (NOT softmax).
+        boosted_scores = boosted_scores / (boosted_scores.sum(dim=-1, keepdim=True) + 1e-12)
         
         return boosted_scores
     
@@ -242,23 +280,33 @@ class AUSoftBoosting:
         Returns:
             Boosted scores array
         """
-        # Convert to probabilities if needed
-        if np.any(raw_scores < 0):
-            probabilities = self._softmax_numpy(raw_scores)
-        else:
-            probabilities = raw_scores
+        scores = np.asarray(raw_scores, dtype=np.float64)
+        if scores.ndim == 1:
+            scores = scores.reshape(1, -1)
+        if scores.ndim != 2 or scores.shape[1] <= 1:
+            raise ValueError(f"expected (B, C) scores, got shape {scores.shape}")
+
+        row_sums = scores.sum(axis=1)
+        looks_like_proba = (
+            np.all(np.isfinite(scores))
+            and np.all(scores >= 0.0)
+            and np.all(scores <= 1.0)
+            and np.all(np.isfinite(row_sums))
+            and np.all(np.abs(row_sums - 1.0) < 1e-3)
+        )
+        probabilities = scores if looks_like_proba else self._softmax_numpy(scores)
         
         # Compute AU-based emotion weights
         emotion_weights = self.compute_emotion_au_weights(au_activations)
         
         # Convert to array
-        weight_array = np.array([emotion_weights[emotion] for emotion in self.emotions])
+        weight_array = np.array([emotion_weights.get(emotion, 0.0) for emotion in self.prob_emotion_order])
         
         # Apply soft boosting formula
         boosted_scores = probabilities * (1 + self.lambda_boost * weight_array)
         
-        # Renormalize
-        boosted_scores = self._softmax_numpy(boosted_scores)
+        # Renormalize by sum-to-one (NOT softmax).
+        boosted_scores = boosted_scores / (np.sum(boosted_scores, axis=-1, keepdims=True) + 1e-12)
         
         return boosted_scores
     
@@ -288,8 +336,8 @@ class AUSoftBoosting:
         
         # Find most influential AU for each emotion
         au_influence = {}
-        for emotion in self.emotions:
-            pattern_aus = self.au_config.EMOTION_AU_PATTERNS[emotion]
+        for emotion in self.prob_emotion_order:
+            pattern_aus = self.EMOTION_AU_PATTERNS.get(emotion, [])
             au_contributions = {}
             
             for au_idx in pattern_aus:

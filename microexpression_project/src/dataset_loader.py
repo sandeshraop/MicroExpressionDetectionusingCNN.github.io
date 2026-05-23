@@ -6,6 +6,7 @@ from typing import List, Tuple, Dict, Optional
 
 from preprocessing_pipeline import OnsetApexOffsetSelector
 from config import EMOTION_LABELS, LABEL_TO_EMOTION
+from optical_flow_utils import triplet_to_six_channel_flow
 
 
 class CNNCASMEIIDataset(Dataset):
@@ -22,13 +23,13 @@ class CNNCASMEIIDataset(Dataset):
         
         Args:
             data_root: Root directory containing CASME-II data
-            labels_file: Path to CASME2-coding-20140508.csv (with onset/apex/offset)
+            labels_file: Path to labels CSV with onset/apex/offset (default: ``casme2_labels.csv``).
         """
         self.data_root = data_root
         
-        # Set default labels file path
+        # Set default labels file path (aligned with training scripts / repo layout)
         if labels_file is None:
-            labels_file = os.path.join(os.path.dirname(data_root), 'labels', 'CASME2-coding-20140508.csv')
+            labels_file = os.path.join(os.path.dirname(data_root), 'labels', 'casme2_labels.csv')
         
         # Initialize frame selector
         self.frame_selector = OnsetApexOffsetSelector(labels_file)
@@ -38,6 +39,7 @@ class CNNCASMEIIDataset(Dataset):
         
         # Pre-load frames for efficiency (optional, can be disabled for large datasets)
         self.frames_cache = {}
+        self._flow_cache = {}
         self._cache_frames()
         
         print(f"Loaded {len(self.samples)} samples for CNN training")
@@ -56,25 +58,33 @@ class CNNCASMEIIDataset(Dataset):
         """Pre-load and cache frames for faster access."""
         print("Caching frames...")
         cached_count = 0
-        
+        self._flow_cache = {}
+
         for i, sample in enumerate(self.samples):
             subject = sample['subject']
             episode = sample['episode']
-            video_path = sample['video_path']
-            
-            frames = self.frame_selector.select_frames([], {'subject': subject, 'episode': episode})
-            if frames is not None:
-                self.frames_cache[(subject, episode)] = frames
-                cached_count += 1
-            else:
+            key = (subject, episode)
+
+            loaded = self.frame_selector.load_onset_apex_offset_rgb(sample)
+            if loaded is None:
                 print(f"Warning: Failed to load frames for {subject}/{episode}")
-        
+                continue
+            onset, apex, offset = loaded
+            self.frames_cache[key] = (onset, apex, offset)
+            try:
+                flow_np = triplet_to_six_channel_flow(onset, apex, offset)
+                self._flow_cache[key] = torch.from_numpy(flow_np).float()
+            except Exception as e:
+                print(f"Warning: Flow computation failed for {subject}/{episode}: {e}")
+                self._flow_cache[key] = torch.zeros(6, 64, 64, dtype=torch.float32)
+            cached_count += 1
+
         print(f"Cached frames for {cached_count}/{len(self.samples)} samples")
     
     def __len__(self) -> int:
         return len(self.samples)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, Dict]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
         """
         Get a sample from the dataset.
         
@@ -82,7 +92,7 @@ class CNNCASMEIIDataset(Dataset):
             idx: Sample index
         
         Returns:
-            Tuple of (frames_tensor, label, metadata)
+            Tuple of (frames_tensor, flows_tensor, label_tensor, metadata)
         """
         sample = self.samples[idx]
         subject = sample['subject']
@@ -98,27 +108,26 @@ class CNNCASMEIIDataset(Dataset):
             self.frames_cache[key] = (onset, apex, offset)
         
         onset, apex, offset = self.frames_cache[key]
-        
-        # Stack frames into (3, 3, 64, 64) tensor - Convert HWC → CHW
+
         frames_tensor = torch.stack([
             torch.from_numpy(onset).permute(2, 0, 1),
             torch.from_numpy(apex).permute(2, 0, 1),
             torch.from_numpy(offset).permute(2, 0, 1)
-        ], dim=0).float()  # Shape: (3, 3, 64, 64)
-        
-        # Create safe zero flow features instead of random noise
-        flows_tensor = torch.zeros(6, 64, 64)  # SAFE placeholder
-        
+        ], dim=0).float()
+
+        flows_tensor = self._flow_cache.get(key, torch.zeros(6, 64, 64, dtype=torch.float32))
+
         label_tensor = torch.tensor(sample['label'], dtype=torch.long)
         
         # Metadata
         metadata = {
             'subject': sample['subject'],
+            'subject_id': sample['subject'],
             'episode': sample['episode'],
             'emotion': sample['emotion'],
             'onset_frame': sample['onset_frame'],
             'apex_frame': sample['apex_frame'],
-            'offset_frame': sample['offset_frame']
+            'offset_frame': sample['offset_frame'],
         }
         
         # Add optional fields if they exist
@@ -261,8 +270,8 @@ if __name__ == "__main__":
         
         if len(dataset) > 0:
             # Test loading a sample
-            frames, label, metadata = dataset[0]
-            print(f"Frames shape: {frames.shape}")
+            frames, flows, label, metadata = dataset[0]
+            print(f"Frames shape: {frames.shape}, flows: {flows.shape}")
             print(f"Label: {label}")
             print(f"Emotion: {metadata['emotion']}")
             print(f"Subject: {metadata['subject']}")
@@ -287,8 +296,8 @@ if __name__ == "__main__":
             for subject, indices in subject_splits.items():
                 print(f"  {subject}: {len(indices)} samples")
         
-        print("\n✅ CNN dataset working correctly!")
+        print("\n[OK] CNN dataset working correctly!")
         
     except Exception as e:
         print(f"Error: {e}")
-        print("Make sure CASME2-coding-20140508.csv exists in ../data/labels/")
+        print("Make sure labels CSV (e.g. data/labels/casme2_labels.csv) exists beside data/casme2.")

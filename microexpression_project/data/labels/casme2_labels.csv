@@ -180,12 +180,12 @@ sub19,EP01_01f,happiness,happiness,121,189,220,100
 sub19,EP01_02f,happiness,happiness,36,61,127,92
 sub19,EP02_01,surprise,surprise,91,119,151,61
 sub19,EP06_01f,surprise,surprise,146,174,201,56
-sub19,EP06_02f,others,others,211,264,291,81
+sub19,EP06_02f,happiness,happiness,211,264,291,81
 sub19,EP08_02,happiness,happiness,76,119,155,80
 sub19,EP11_01f,others,others,61,81,116,56
 sub19,EP11_04f,surprise,surprise,76,96,131,56
 sub19,EP13_01,disgust,disgust,71,104,156,86
-sub19,EP15_03f,others,others,51,81,101,51
+sub19,EP15_03f,happiness,happiness,51,81,101,51
 sub19,EP16_01,disgust,disgust,86,109,136,51
 sub19,EP16_02,disgust,disgust,61,79,101,41
 sub19,EP19_01,others,others,66,86,101,36

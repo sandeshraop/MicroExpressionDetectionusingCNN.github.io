@@ -13,7 +13,6 @@ pandas==2.0.3
 
 # Image processing
 Pillow==10.0.1
-transforms==0.2.0
 
 # Database/Cache
 redis==4.6.0

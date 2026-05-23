@@ -14,9 +14,8 @@ import traceback
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent / 'src'))
 
-from micro_expression_model import EnhancedHybridModel
 from preprocessing_pipeline import VideoPreprocessor
-from config import LABEL_TO_EMOTION, EMOTION_LABELS
+from inference_utils import hybrid_predict_from_features, load_enhanced_hybrid_from_path
 
 class EnhancedMicroExpressionInferencePipeline:
     """Enhanced inference pipeline with preprocessing"""
@@ -46,12 +45,9 @@ class EnhancedMicroExpressionInferencePipeline:
             model_path: Path to trained model file
         """
         try:
-            # Load the EnhancedHybridModel instance
-            self.model = EnhancedHybridModel()
-            self.model.load_model(model_path)
-            # Move only the feature extractor to device
+            self.model = load_enhanced_hybrid_from_path(model_path)
             self.model.feature_extractor.to(self.device)
-            self.model.feature_extractor.eval()  # Ensure model is in evaluation mode
+            self.model.feature_extractor.eval()
             print(f"✅ Model loaded successfully from {model_path}")
         except Exception as e:
             print(f"❌ Failed to load model: {e}")
@@ -73,46 +69,40 @@ class EnhancedMicroExpressionInferencePipeline:
         try:
             # Preprocess video
             print(f"🎬 Processing video: {video_path}")
-            frames_tensor, flows_tensor = self.preprocessor.preprocess_video(video_path)
-            
-            # Move to device
+            frames_tensor, flows_tensor = self.preprocessor.preprocess_video(
+                video_path, max_input_frames=64, verbose=False
+            )
+            n_read = getattr(self.preprocessor, "_last_input_frame_count", None)
+
             frames_tensor = frames_tensor.to(self.device)
             flows_tensor = flows_tensor.to(self.device)
-            
-            # Ensure correct tensor shapes - MATCH TRAINING FORMAT
-            # Use full temporal sequence with proper batch dimension
-            # frames_tensor: (3, 3, 64, 64) - keep as individual frames
-            # flows_tensor: (6, 64, 64) -> (3, 6, 64, 64) - expand to match frames
-            flows_tensor = flows_tensor.unsqueeze(0).expand(3, 6, 64, 64)  # (3, 6, 64, 64)
-            
-            # Extract features using full temporal sequence
-            # This matches training format exactly and preserves motion information
+
+            frames_b = frames_tensor.unsqueeze(0)
+            flows_b = flows_tensor.unsqueeze(0)
+
             with torch.no_grad():
-                features = self.model.extract_all_features(
-                    frames_tensor,  # (3, 3, 64, 64) - individual frames as batch
-                    flows_tensor   # (3, 6, 64, 64) - matching batch dimension
-                )
+                features = self.model.extract_all_features(frames_b, flows_b)
+
+            feats = features.detach().cpu().numpy() if torch.is_tensor(features) else np.asarray(features)
+            if feats.ndim == 1:
+                feats = feats.reshape(1, -1)
+            hp = hybrid_predict_from_features(self.model, feats.astype(np.float64, copy=False))
+            predicted_emotion = hp["prediction_emotion"]
+            confidence = hp["confidence"]
+            all_probabilities = hp["by_emotion"]
             
-            # Predict emotion
-            prediction_idx = self.model.pipeline.predict(features)[0]
-            predicted_emotion = LABEL_TO_EMOTION[prediction_idx]
-            
-            # Get probabilities
-            probabilities = self.model.pipeline.predict_proba(features)[0]
-            confidence = float(np.max(probabilities))
-            all_probabilities = {LABEL_TO_EMOTION[i]: float(p) for i, p in enumerate(probabilities)}
-            
-            # AU Contribution Analysis (placeholder)
+            # AU contribution is not computed here (no AU detector in this pipeline).
+            # Keep the field for API compatibility, but mark it explicitly as visual/placeholder only.
             au_contribution = {
-                "most_active_au": "AU12",
-                "total_strain_energy": 0.75,
-                "au_rankings": {
-                    "AU12": {"activity_score": 0.9, "description": "Lip Corner Puller"},
-                    "AU6": {"activity_score": 0.7, "description": "Cheek Raiser"},
-                    "AU1": {"activity_score": 0.5, "description": "Inner Brow Raiser"},
-                    "AU4": {"activity_score": 0.4, "description": "Brow Lowerer"},
-                    "AU10": {"activity_score": 0.3, "description": "Upper Lip Raiser"}
-                }
+                "visual_explanation_only": True,
+                "most_active_au": None,
+                "total_strain_energy": None,
+                "au_rankings": {},
+                "note": (
+                    "No AU detector is executed in enhanced_inference_pipeline.py. "
+                    "Probabilities are produced by the hybrid CNN-SVM model; AU boosting (if enabled) "
+                    "operates by adjusting probabilities, not by overriding labels."
+                ),
             }
             
             return {
@@ -123,7 +113,8 @@ class EnhancedMicroExpressionInferencePipeline:
                 "au_contribution": au_contribution,
                 "frame_info": {
                     "video_path": video_path,
-                    "frames_processed": frames_tensor.shape[1] if frames_tensor.dim() > 1 else 3,
+                    "frames_processed": int(n_read) if n_read is not None else int(frames_tensor.shape[0]),
+                    "onset_apex_offset_slices": int(frames_tensor.shape[0]) if frames_tensor.dim() >= 1 else 3,
                     "frame_size": f"{frames_tensor.shape[-2]}x{frames_tensor.shape[-1]}",
                     "preprocessing": "face_detection" if self.preprocessor.face_detection_enabled else "center_crop"
                 },

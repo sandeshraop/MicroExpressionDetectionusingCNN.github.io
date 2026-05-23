@@ -4,13 +4,14 @@ import torch.nn.functional as F
 from typing import Dict, Any
 
 from config import NUM_EMOTIONS
+from config import FLOW_CHANNELS
 
 
 class FlowCNN(nn.Module):
     """
     CNN model for optical flow-based micro-expression recognition.
     
-    Input: 4-channel flow tensor [flow_x1, flow_y1, flow_x2, flow_y2] of shape (4, 64, 64)
+    Input: 6-channel flow tensor [flow_x1, flow_y1, flow_x2, flow_y2, strain1, strain2] of shape (6, 64, 64)
     Architecture: Reduced capacity for small datasets to prevent memorization
     """
     
@@ -24,7 +25,7 @@ class FlowCNN(nn.Module):
         super(FlowCNN, self).__init__()
         
         # Reduced convolutional layers for flow processing
-        self.conv1 = nn.Conv2d(6, 16, kernel_size=3, padding=1)  # (6, 64, 64) -> (16, 64, 64)
+        self.conv1 = nn.Conv2d(FLOW_CHANNELS, 16, kernel_size=3, padding=1)  # (6, 64, 64) -> (16, 64, 64)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)  # (16, 64, 64) -> (32, 64, 64)
         self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)  # (32, 64, 64) -> (64, 64, 64)
         
@@ -56,7 +57,7 @@ class FlowCNN(nn.Module):
         Forward pass through the network.
         
         Args:
-            x: Input tensor of shape (batch_size, 4, 64, 64)
+            x: Input tensor of shape (batch_size, 6, 64, 64)
         
         Returns:
             Output logits of shape (batch_size, num_classes)
@@ -134,7 +135,7 @@ class FlowCNN(nn.Module):
         
         return {
             'model_type': 'FlowCNN',
-            'input_shape': '(batch_size, 6, 64, 64)',
+            'input_shape': f'(batch_size, {FLOW_CHANNELS}, 64, 64)',
             'input_description': '[flow_x1, flow_y1, flow_x2, flow_y2, strain1, strain2] from onset→apex, apex→offset',
             'num_classes': NUM_EMOTIONS,
             'total_parameters': total_params,
@@ -215,7 +216,7 @@ class HybridFlowCNN(nn.Module):
         
         Args:
             frames: Frame tensor of shape (batch_size, 3, 64, 64)
-            flows: Flow tensor of shape (batch_size, 4, 64, 64)
+            flows: Flow tensor of shape (batch_size, 6, 64, 64)
         
         Returns:
             Output logits of shape (batch_size, num_classes)
@@ -273,12 +274,12 @@ class HybridFlowCNN(nn.Module):
         
         return {
             'model_type': 'HybridFlowCNN',
-            'input_shape': '(batch_size, 3, 64, 64) + (batch_size, 6, 64, 64)',
+            'input_shape': f'(batch_size, 3, 64, 64) + (batch_size, {FLOW_CHANNELS}, 64, 64)',
             'input_description': 'Frames + Optical Flow with Strain',
             'num_classes': NUM_EMOTIONS,
             'total_parameters': total_params,
             'trainable_parameters': trainable_params,
-            'architecture': 'FrameEncoder(Conv(3->32)->ReLU->Pool->Conv(32->64)->ReLU->Pool->Conv(64->128)->ReLU->Pool) + FlowEncoder(Conv(6->32)->ReLU->Pool->Conv(32->64)->ReLU->Pool->Conv(64->128)->ReLU->Pool) + Fusion(FC(8192*2->512)->ReLU->FC(512->256)->ReLU->FC(256->4)) (Deterministic, No Dropout)'
+            'architecture': 'FrameEncoder(Conv(3->32)->ReLU->Pool->Conv(32->64)->ReLU->Pool->Conv(64->128)->ReLU->Pool) + FlowEncoder(Conv(6->32)->ReLU->Pool->Conv(32->64)->ReLU->Pool->Conv(64->128)->ReLU->Pool) + Fusion(FC(8192*2->256)->ReLU->FC(256->128)->ReLU->FC(128->4)) (Deterministic, No Dropout)'
         }
 
 

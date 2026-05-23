@@ -91,7 +91,9 @@ def main():
         print(f"Found {len(video_files)} video files")
         
         # Process all videos
-        results = pipeline.batch_predict([str(vf) for vf in video_files])
+        results = []
+        for vf in video_files:
+            results.append(pipeline.predict_emotion(str(vf)))
         
         # Summary
         successful = sum(1 for r in results if r['success'])

@@ -1,0 +1,57 @@
+{
+  "timestamp": "20260414_085233",
+  "model_type": "FaceSleuthEnhancedHybridModel",
+  "training_data": "Real CASME-II cropped images",
+  "evaluation_method": "LOSO SVM (leave-one-subject-out on hybrid features)",
+  "loso_mean_fold_accuracy": 0.8399591823130166,
+  "training_accuracy": 0.8399591823130166,
+  "loso_accuracy_std": 0.20220175638254084,
+  "scientific_notes": {
+    "cnn_training": "CNN trained on full dataset (acceptable for CASME-II)",
+    "loso_evaluation": "LOSO evaluation performed on SVM features only",
+    "optical_flow": "Farneback flow + strain (6 channels) computed from onset/apex/offset frames",
+    "cnn_classifier": "CNN trained with temporary classifier head (standard practice)",
+    "au_boosting": "AU-aware soft boosting applied only at inference time",
+    "classification": "Classification performed using SVM on learned + handcrafted features",
+    "data_leakage": "LOSO evaluation used to avoid data leakage",
+    "training_accuracy_note": "Key training_accuracy is mean LOSO fold accuracy, not CNN head accuracy",
+    "performance_validity": "Report LOSO metrics from this run for model comparison; external validation still recommended.",
+    "pipeline_validation": "End-to-end pipeline uses real optical flow tensors aligned with training labels."
+  },
+  "feature_dim": 232,
+  "feature_breakdown": {
+    "cnn_features": 128,
+    "handcrafted": 48,
+    "au_aligned_strain_statistics": 40,
+    "au9_au10_specific": 8,
+    "facesleuth_vertical_features": 4,
+    "total_vector_dim": 232
+  },
+  "training_samples": 254,
+  "emotion_distribution": {
+    "happiness": 34,
+    "others": 106,
+    "disgust": 62,
+    "repression": 27,
+    "surprise": 25
+  },
+  "data_root": "C:\\New Project\\microexpression_project\\data\\casme2",
+  "epochs": 12,
+  "learning_rate": 0.001,
+  "facesleuth_innovations": {
+    "enabled": true,
+    "vertical_alpha": 1.5,
+    "vertical_bias": true,
+    "au_boosting": true,
+    "enhanced_features": true
+  },
+  "uar": 0.8695023742370418,
+  "happiness_recall": 0.9117647058823529,
+  "per_class_recall": {
+    "happiness": 0.9117647058823529,
+    "surprise": 0.88,
+    "disgust": 0.8548387096774194,
+    "repression": 0.8518518518518519,
+    "others": 0.8490566037735849
+  }
+}

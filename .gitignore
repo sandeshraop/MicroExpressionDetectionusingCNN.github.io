@@ -2,6 +2,10 @@
 microexpression_project/data/casme2/
 microexpression_project/data/predict/
 
+# Local run logs
+microexpression_project/web_run_err.txt
+microexpression_project/web_run_out.txt
+
 # Ignore cache directories
 microexpression_project/scripts/__pycache__/
 microexpression_project/web/__pycache__/
@@ -30,6 +34,7 @@ wheels/
 MANIFEST
 
 # Virtual environments
+.venv/
 venv/
 env/
 ENV/
@@ -46,3 +51,10 @@ venv.bak/
 # OS ignores
 .DS_Store
 Thumbs.db
+
+# Local archives and duplicate runtime output (root-level)
+python_files.zip
+/results/
+
+# Ephemeral web analysis JSON (CSV summaries remain tracked)
+microexpression_project/web/results/json/

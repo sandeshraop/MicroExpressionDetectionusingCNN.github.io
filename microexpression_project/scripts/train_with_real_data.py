@@ -9,19 +9,21 @@ SCIENTIFIC NOTES:
 • Classification performed using SVM on learned + handcrafted features
 • LOSO evaluation used to avoid data leakage (subject-independent)
 • Training accuracy monitored for convergence only (not for performance claims)
-• Feature dimension corrected to 228D (128+48+40+8+4) from incorrect 232D
+• Feature dimension: 232D (128+48+40+12+4) for FaceSleuth mode
 • CNN trained on full dataset (acceptable for CASME-II due to limited size)
-• Synthetic optical flow used (NOT FOR EVALUATION - requires real flow computation)
+• Optical flow: Farneback + strain from onset/apex/offset (6 channels)
 • LOSO evaluation performed on SVM features only (CNN frozen during evaluation)
 """
 
 import os
 import sys
 import argparse
+import random
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 import torch
+import math
 import numpy as np
 
 # Add src to path
@@ -34,12 +36,26 @@ if str(project_root) not in sys.path:
 
 from micro_expression_model import EnhancedHybridModel
 from dataset_loader import CNNCASMEIIDataset
-from config import EMOTION_LABELS, LABEL_TO_EMOTION, EMOTION_DISPLAY_ORDER
+from config import EMOTION_LABELS, LABEL_TO_EMOTION, EMOTION_DISPLAY_ORDER, NUM_EMOTIONS
 from sklearn.utils.class_weight import compute_class_weight
+from preprocessing_pipeline import OnsetApexOffsetSelector
+from optical_flow_utils import triplet_to_six_channel_flow
 
 print("🔬 FaceSleuth Real Data Training")
 print("✅ Real CASME-II Data + FaceSleuth Innovations")
 print("=" * 60)
+
+def set_reproducible_seeds(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Best-effort determinism; may reduce performance on some ops.
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
 
 def check_processed_data(data_root: str) -> bool:
     """Check if processed data exists and is valid"""
@@ -78,87 +94,85 @@ def check_processed_data(data_root: str) -> bool:
     return True
 
 def load_real_casmeii_direct(data_root: str, labels_file: str):
-    """Load real CASME-II data directly from file system"""
+    """Load real CASME-II data directly from file system (onset/apex/offset + optical flow)."""
     print("🔍 Loading real CASME-II data directly...")
-    
-    # Load labels
+
     labels_df = pd.read_csv(labels_file)
     print(f"✅ Loaded labels: {len(labels_df)} samples")
-    
-    # Load real images
+
+    selector = OnsetApexOffsetSelector(None)
     frames_list = []
     flows_list = []
     labels_list = []
     metadata_list = []
-    
+
+    skipped_not_target = 0
+    skipped_missing_episode = 0
+    skipped_load_fail = 0
+
     for idx, row in labels_df.iterrows():
         try:
+            emotion = str(row['emotion_label'])
+            if emotion not in EMOTION_LABELS:
+                skipped_not_target += 1
+                continue
+
             subject_dir = Path(data_root) / row['subject_id']
             episode_dir = subject_dir / row['episode_id']
-            
+
             if not episode_dir.exists():
                 print(f"⚠️  Episode not found: {episode_dir}")
+                skipped_missing_episode += 1
                 continue
-            
-            # Get frame files in this episode
-            frame_files = sorted(episode_dir.glob("reg_img*.jpg"))
-            
-            if len(frame_files) == 0:
-                print(f"⚠️  No frames found in: {episode_dir}")
+
+            sample = {
+                'video_path': str(episode_dir),
+                'onset_frame': int(row['onset_frame']),
+                'apex_frame': int(row['apex_frame']),
+                'offset_frame': int(row['offset_frame']),
+            }
+            triplet = selector.load_onset_apex_offset_rgb(sample)
+            if triplet is None:
+                print(f"⚠️  Could not load frames: {episode_dir}")
+                skipped_load_fail += 1
                 continue
-            
-            # Load frames (select subset around apex)
-            onset_frame = row['onset_frame']
-            apex_frame = row['apex_frame']
-            offset_frame = row['offset_frame']
-            
-            # Create frame sequence (use all available frames)
-            episode_frames = []
-            for frame_file in frame_files:
-                try:
-                    # Load all frames regardless of numbering
-                    frame_path = episode_dir / frame_file
-                    frame = load_real_frame(frame_path)
-                    episode_frames.append(frame)
-                except Exception as e:
-                    # Skip frames with loading errors
-                    continue
-            
-            if len(episode_frames) == 0:
-                print(f"⚠️  No valid frames for: {episode_dir}")
-                continue
-            
-            # Convert to tensor (T, 3, H, W)
-            frames_tensor = torch.stack(episode_frames)
-            
-            # Generate synthetic optical flow for now (replace with real flow later)
-            # ⚠️  WARNING: Using synthetic optical flow (NOT FOR EVALUATION)
-            print("⚠️  WARNING: Using synthetic optical flow (NOT FOR EVALUATION)")
-            flows_tensor = torch.randn(6, 64, 64)
-            
-            # Store data
+
+            o, a, off = triplet
+            frames_tensor = torch.stack([
+                torch.from_numpy(o).permute(2, 0, 1),
+                torch.from_numpy(a).permute(2, 0, 1),
+                torch.from_numpy(off).permute(2, 0, 1),
+            ], dim=0).float()
+
+            flow_np = triplet_to_six_channel_flow(o, a, off)
+            flows_tensor = torch.from_numpy(flow_np).float()
+
             frames_list.append(frames_tensor)
             flows_list.append(flows_tensor)
-            labels_list.append(row['emotion_label'])
+            labels_list.append(EMOTION_LABELS[emotion])
             metadata_list.append({
+                'subject': row['subject_id'],
                 'subject_id': row['subject_id'],
                 'episode_id': row['episode_id'],
-                'emotion_label': row['emotion_label'],
-                'raw_emotion': row['raw_emotion'],
-                'onset_frame': row['onset_frame'],
-                'apex_frame': row['apex_frame'],
-                'offset_frame': row['offset_frame'],
-                'num_frames': len(episode_frames)
+                'emotion_label': emotion,
+                'raw_emotion': row.get('raw_emotion', emotion),
+                'onset_frame': sample['onset_frame'],
+                'apex_frame': sample['apex_frame'],
+                'offset_frame': sample['offset_frame'],
             })
-            
+
             if idx % 50 == 0:
                 print(f"   Loaded {idx + 1}/{len(labels_df)} samples")
-                
+
         except Exception as e:
             print(f"⚠️  Error loading sample {idx}: {e}")
             continue
-    
+
     print(f"✅ Loaded {len(frames_list)} real samples")
+    print(
+        f"ℹ️  Skipped rows: not_target_label={skipped_not_target}, "
+        f"missing_episode_dir={skipped_missing_episode}, load_fail={skipped_load_fail}"
+    )
     return frames_list, flows_list, labels_list, metadata_list
 
 def load_real_frame(frame_path: Path) -> torch.Tensor:
@@ -182,7 +196,7 @@ def load_real_frame(frame_path: Path) -> torch.Tensor:
         
     except Exception as e:
         print(f"⚠️  Error loading frame {frame_path}: {e}")
-        return torch.randn(3, 64, 64)
+        return torch.zeros(3, 64, 64, dtype=torch.float32)
 
 def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs: int = 12, learning_rate: float = 0.001,
                          use_facesleuth: bool = True, vertical_alpha: float = 1.5):
@@ -202,6 +216,12 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
     print(f"🔬 FaceSleuth Innovations: {'ENABLED' if use_facesleuth else 'DISABLED'}")
     print(f"📊 Vertical Bias Alpha: {vertical_alpha}")
     print("=" * 60)
+
+    uar = None
+    happiness_recall = None
+    per_class_recall: dict = {}
+
+    set_reproducible_seeds(42)
     
     # Check data availability
     if not check_processed_data(data_root):
@@ -221,57 +241,57 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
     print("🔄 Loading real CASME-II dataset...")
     try:
         dataset = CNNCASMEIIDataset(str(data_root), str(labels_file))
-        
+
         if len(dataset) == 0:
-            print("❌ No samples loaded from dataset")
-            return
-        
-        print(f"✅ Dataset loaded: {len(dataset)} samples")
-        
-        # Print emotion distribution
-        emotion_counts = {}
-        for i in range(len(dataset)):
-            _, _, label, _ = dataset[i]
-            emotion = LABEL_TO_EMOTION[label.item()]
-            emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
-        
-        print("📊 Emotion distribution:")
-        for emotion, count in emotion_counts.items():
-            print(f"  {emotion}: {count} samples")
-        
+            print("❌ No samples loaded from dataset — will try direct filesystem loading")
+            dataset = None
+        else:
+            print(f"✅ Dataset loaded: {len(dataset)} samples")
+
     except Exception as e:
         print(f"❌ Error loading dataset: {e}")
-        # Try alternative loading method for real CASME-II data
         print("🔄 Trying alternative real data loading...")
-        return load_real_casmeii_direct(data_root, labels_file)
-    
-    # Prepare training data
-    print("📊 Preparing training data...")
+        dataset = None
+
     frames_list = []
     flows_list = []
     labels_list = []
-    metadata_list = []  # Initialize metadata_list here
-    
-    try:
-        for i in range(len(dataset)):
-            frames, flows, label, metadata = dataset[i]
-            frames_list.append(frames)
-            flows_list.append(flows)
-            labels_list.append(label.item())
-            metadata_list.append(metadata)  # Store metadata
-        
-        print(f"✅ Prepared {len(frames_list)} training samples")
-        
-    except Exception as e:
-        print(f"❌ Error preparing training data: {e}")
-        # Only fall back if dataset loader fails
-        print("🔄 Using alternative real data loading...")
-        frames_list, flows_list, labels_list, metadata_list = load_real_casmeii_direct(data_root, labels_file)
-        
+    metadata_list = []
+
+    if dataset is not None:
+        print("📊 Preparing training data...")
+        try:
+            for i in range(len(dataset)):
+                frames, flows, label, metadata = dataset[i]
+                frames_list.append(frames)
+                flows_list.append(flows)
+                labels_list.append(label.item())
+                metadata_list.append(metadata)
+
+            print(f"✅ Prepared {len(frames_list)} training samples")
+
+        except Exception as e:
+            print(f"❌ Error preparing training data: {e}")
+            print("🔄 Using alternative real data loading...")
+            frames_list, flows_list, labels_list, metadata_list = load_real_casmeii_direct(
+                str(data_root), str(labels_file)
+            )
+            if len(frames_list) == 0:
+                print("❌ No real data loaded")
+                return
+    else:
+        frames_list, flows_list, labels_list, metadata_list = load_real_casmeii_direct(
+            str(data_root), str(labels_file)
+        )
         if len(frames_list) == 0:
             print("❌ No real data loaded")
             return
-    
+
+    emotion_counts = {}
+    for lab in labels_list:
+        name = LABEL_TO_EMOTION[int(lab)]
+        emotion_counts[name] = emotion_counts.get(name, 0) + 1
+
     # Initialize FaceSleuth model
     print("🧠 Initializing FaceSleuth Enhanced Hybrid Model...")
     try:
@@ -295,22 +315,18 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         print(f"❌ Error initializing FaceSleuth model: {e}")
         return
     
-    # Use alternative loading path only if dataset loader fails
-    if len(frames_list) == 0:
-        print("🔄 Using alternative real data loading...")
-        frames_list, flows_list, labels_list, metadata_list = load_real_casmeii_direct(data_root, labels_file)
-        
-        if len(frames_list) == 0:
-            print("❌ No real data loaded")
-            return
-    
     # Compute class weights
     print("⚖️ Computing class weights...")
     try:
-        classes = np.unique(labels_list)
-        class_weights = compute_class_weight('balanced', classes=classes, y=labels_list)
-        class_weights = torch.tensor(class_weights, dtype=torch.float32)
-        print(f"✅ Class weights computed: {dict(zip(classes, class_weights.numpy()))}")
+        classes_present = np.unique(labels_list)
+        cw_full = np.ones(NUM_EMOTIONS, dtype=np.float64)
+        w_part = compute_class_weight(
+            'balanced', classes=classes_present, y=np.asarray(labels_list, dtype=np.int64)
+        )
+        for c, wi in zip(classes_present, w_part):
+            cw_full[int(c)] = float(wi)
+        class_weights = torch.tensor(cw_full, dtype=torch.float32)
+        print(f"✅ Class weights (index=class id): {dict(enumerate(cw_full.tolist()))}")
     except Exception as e:
         print(f"❌ Error computing class weights: {e}")
         class_weights = None
@@ -324,14 +340,10 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         labels_tensor = torch.tensor(labels_list, dtype=torch.long)
         
         print(f"📊 Training tensors: frames {frames_tensor.shape}, flows {flows_tensor.shape}")
-        
-        # SCIENTIFIC FIX: Handle temporal frames for CNN
-        # CNN expects (N, C, H, W), so we need to handle the temporal dimension
-        if frames_tensor.dim() == 5:  # (N, T, C, H, W)
-            print("📊 Using temporal frames - averaging for CNN training")
-            frames_tensor = frames_tensor.mean(dim=1)  # (N, C, H, W)
-        
-        print(f"📊 Final tensors: frames {frames_tensor.shape}, flows {flows_tensor.shape}")
+        frames_tensor_full = frames_tensor.clone()
+        if frames_tensor.dim() == 5:
+            frames_tensor = frames_tensor[:, 1, :, :, :].contiguous()
+        print(f"📊 CNN inputs (apex frame): frames {frames_tensor.shape}, flows {flows_tensor.shape}")
         
         # Simple CNN training (can be enhanced)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -345,10 +357,11 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         # Training setup
         # SCIENTIFIC FIX: Add temporary classifier head for proper CNN training
         feature_dim = 128  # CNN feature dimension
-        num_classes = len(classes)
+        num_classes = NUM_EMOTIONS
         classifier = torch.nn.Linear(feature_dim, num_classes).to(device)
         
-        criterion = torch.nn.CrossEntropyLoss(weight=class_weights.to(device))
+        cw = class_weights.to(device) if class_weights is not None else None
+        criterion = torch.nn.CrossEntropyLoss(weight=cw)
         optimizer = torch.optim.Adam(
             list(model.feature_extractor.parameters()) + list(classifier.parameters()),
             lr=learning_rate
@@ -361,14 +374,12 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
             correct = 0
             total = 0
             
-            # Simple batch processing (can be enhanced with proper DataLoader)
             batch_size = 8
-            num_batches = len(frames_tensor) // batch_size
-            
-            for batch_idx in range(num_batches):
-                start_idx = batch_idx * batch_size
-                end_idx = start_idx + batch_size
-                
+            n_samples = len(frames_tensor)
+            num_batches = max(1, math.ceil(n_samples / batch_size))
+
+            for start_idx in range(0, n_samples, batch_size):
+                end_idx = min(start_idx + batch_size, n_samples)
                 batch_frames = frames_tensor[start_idx:end_idx]
                 batch_flows = flows_tensor[start_idx:end_idx]
                 batch_labels = labels_tensor[start_idx:end_idx]
@@ -389,8 +400,8 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
                 total += batch_labels.size(0)
                 correct += (predicted == batch_labels).sum().item()
             
-            accuracy = 100 * correct / total
-            avg_loss = total_loss / num_batches
+            accuracy = 100 * correct / max(1, total)
+            avg_loss = total_loss / max(1, num_batches)
             
             if (epoch + 1) % 3 == 0:
                 print(f"  Epoch {epoch + 1}/{epochs}: Loss {avg_loss:.4f}, Acc {accuracy:.2f}%")
@@ -412,14 +423,15 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         # Extract FaceSleuth features from all samples
         print("🔬 Extracting FaceSleuth features...")
         model.feature_extractor.eval()
-        model.feature_extractor.to('cpu')  # Move to CPU for feature extraction
+        model.feature_extractor.to('cpu')
         with torch.no_grad():
             all_features = []
             all_subject_ids = []
-            
-            for i in range(len(frames_tensor)):
-                frames_sample = frames_tensor[i:i+1]  # (1, 3, 3, 64, 64)
-                flows_sample = flows_tensor[i:i+1]    # (1, 6, 64, 64)
+
+            feat_frames = frames_tensor_full.cpu()
+            for i in range(len(feat_frames)):
+                frames_sample = feat_frames[i:i+1]
+                flows_sample = flows_tensor[i:i+1]
                 
                 # Move to CPU for feature extraction
                 frames_sample = frames_sample.cpu()
@@ -431,25 +443,24 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
                 
                 # Get subject ID for LOSO
                 if i < len(metadata_list):
-                    all_subject_ids.append(metadata_list[i].get('subject_id', f"subject_{i}"))
+                    meta = metadata_list[i]
+                    all_subject_ids.append(meta.get('subject') or meta.get('subject_id') or f"subject_{i}")
                 else:
-                    # Fallback for alternative loading
                     all_subject_ids.append(f"subject_{i}")
-            
-            all_features = torch.cat(all_features, dim=0)
-        
+
+            all_features = np.vstack(all_features)
+
         print(f"✅ FaceSleuth features extracted: {all_features.shape}")
         if use_facesleuth:
             print(f"🔬 FaceSleuth feature dimension: {all_features.shape[1]}D")
             print("   • CNN features: 128D")
             print("   • Handcrafted features: 48D")
             print("   • AU strain statistics: 40D")
-            print("   • AU9/AU10 specific: 8D")
+            print("   • AU9/AU10 specific: 12D")
             print("   • FaceSleuth vertical features: 4D")
-            print("   • Total: 228D (corrected from 232D)")
+            print("   • Total: 232D")
         
-        # Convert to numpy for SVM
-        features_np = all_features.cpu().numpy()
+        features_np = np.asarray(all_features)
         labels_np = np.array(labels_list)
         subject_ids_np = np.array(all_subject_ids)
         
@@ -462,6 +473,8 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         
         logo = LeaveOneGroupOut()
         loso_accuracies = []
+        loso_y_true_chunks: list = []
+        loso_y_pred_chunks: list = []
         
         for fold, (train_idx, test_idx) in enumerate(logo.split(features_np, labels_np, subject_ids_np)):
             X_train, X_test = features_np[train_idx], features_np[test_idx]
@@ -486,28 +499,45 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
                 predictions = model.pipeline.predict(X_test)
                 fold_accuracy = np.mean(predictions == y_test)
                 loso_accuracies.append(fold_accuracy)
+                loso_y_true_chunks.append(np.asarray(y_test).astype(np.int64).ravel())
+                loso_y_pred_chunks.append(np.asarray(predictions).astype(np.int64).ravel())
                 
                 print(f"   Fold {fold + 1}: {fold_accuracy:.3f} ({fold_accuracy*100:.1f}%)")
             except Exception as svm_error:
                 print(f"   SVM error in fold {fold + 1}: {svm_error}")
-                print(f"   Using baseline accuracy for this fold")
-                # Use baseline accuracy as fallback
-                fold_accuracy = np.mean(y_train == y_train[0])  # Simple baseline
-                loso_accuracies.append(fold_accuracy)
-                print(f"   Fold {fold + 1}: {fold_accuracy:.3f} (baseline)")
+                loso_accuracies.append(np.nan)
+                print(f"   Fold {fold + 1}: omitted from LOSO mean (fit/predict failed)")
         
-        mean_loso_accuracy = np.mean(loso_accuracies)
-        std_loso_accuracy = np.std(loso_accuracies)
+        mean_loso_accuracy = float(np.nanmean(loso_accuracies))
+        std_loso_accuracy = float(np.nanstd(loso_accuracies))
+
+        from sklearn.metrics import recall_score
+
+        if loso_y_true_chunks:
+            y_true_all = np.concatenate(loso_y_true_chunks)
+            y_pred_all = np.concatenate(loso_y_pred_chunks)
+            labels_order = list(range(NUM_EMOTIONS))
+            recalls = recall_score(
+                y_true_all, y_pred_all, labels=labels_order, average=None, zero_division=0
+            )
+            uar = float(np.mean(recalls))
+            per_class_recall = {
+                LABEL_TO_EMOTION[i]: float(recalls[i]) for i in labels_order
+            }
+            happiness_recall = float(per_class_recall.get("happiness", 0.0))
+            print(
+                f"📊 LOSO UAR (macro recall): {uar:.3f} ({uar*100:.1f}%) · "
+                f"happiness recall: {happiness_recall:.3f} ({happiness_recall*100:.1f}%)"
+            )
         
         print(f"✅ FaceSleuth SVM trained successfully")
-        print(f"📊 LOSO Accuracy: {mean_loso_accuracy:.3f} ({mean_loso_accuracy*100:.1f}%) ± {std_loso_accuracy:.3f}")
+        if np.isnan(mean_loso_accuracy):
+            print("📊 LOSO Accuracy: undefined (all folds failed SVM fit/predict)")
+        else:
+            print(f"📊 LOSO Accuracy: {mean_loso_accuracy:.3f} ({mean_loso_accuracy*100:.1f}%) ± {std_loso_accuracy:.3f}")
         print("⚠️  NOTE: CNN trained on full dataset (acceptable for CASME-II due to limited size)")
         print("⚠️  NOTE: LOSO evaluation performed on SVM features only (CNN frozen during evaluation)")
-        print("❌ PERFORMANCE LIMITATION: Synthetic optical flow used (NOT FOR EVALUATION)")
-        print("🔬 Pipeline validation: Training and evaluation framework validated")
-        print("🔬 Real optical flow computation required for actual performance evaluation")
-        print("🔬 FaceSleuth motion modeling gains require real optical flow")
-        print("📊 Current results validate methodology, not final performance")
+        print("🔬 Optical flow: Farneback + strain maps (6 ch) per sample")
         
         # Train final SVM on all data for deployment
         try:
@@ -551,33 +581,40 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         
         # Save metadata
         import json
+        std_json = None if (isinstance(std_loso_accuracy, float) and np.isnan(std_loso_accuracy)) else std_loso_accuracy
+        fdim = int(features_np.shape[1])
         metadata = {
             'timestamp': timestamp,
             'model_type': 'FaceSleuthEnhancedHybridModel',
             'training_data': 'Real CASME-II cropped images',
+            'evaluation_method': 'LOSO SVM (leave-one-subject-out on hybrid features)',
+            # Mean of per-subject held-out fold accuracies (same as sklearn LOSO + accuracy per fold).
+            'loso_mean_fold_accuracy': mean_loso_accuracy,
+            # Kept for older readers; not CNN epoch accuracy.
             'training_accuracy': mean_loso_accuracy,
+            'loso_accuracy_std': std_json,
             'scientific_notes': {
                 'cnn_training': 'CNN trained on full dataset (acceptable for CASME-II)',
                 'loso_evaluation': 'LOSO evaluation performed on SVM features only',
-                'synthetic_flow': 'Synthetic optical flow used (NOT FOR EVALUATION)',
+                'optical_flow': 'Farneback flow + strain (6 channels) computed from onset/apex/offset frames',
                 'cnn_classifier': 'CNN trained with temporary classifier head (standard practice)',
                 'au_boosting': 'AU-aware soft boosting applied only at inference time',
                 'classification': 'Classification performed using SVM on learned + handcrafted features',
                 'data_leakage': 'LOSO evaluation used to avoid data leakage',
-                'training_accuracy': 'Training accuracy monitored for convergence only',
-                'performance_validity': 'Performance numbers are NOT valid for publication (synthetic flow)',
-                'pipeline_validation': 'This experiment validates the training and evaluation pipeline; performance gains from FaceSleuth motion modeling require real optical flow computation.'
+                'training_accuracy_note': 'training_accuracy JSON field is mean LOSO fold accuracy, not CNN epoch accuracy',
+                'performance_validity': 'Report LOSO metrics from this run for model comparison; external validation still recommended.',
+                'pipeline_validation': 'End-to-end pipeline uses real optical flow tensors aligned with training labels.'
             },
-            'feature_dim': all_features.shape[1] if use_facesleuth else 224,
+            'feature_dim': fdim,
             'feature_breakdown': {
                 'cnn_features': 128,
                 'handcrafted': 48,
                 'au_aligned_strain_statistics': 40,
-                'au9_au10_specific': 8,
+                'au9_au10_specific': 12,
                 'facesleuth_vertical_features': 4 if use_facesleuth else 0,
-                'total_corrected': 228 if use_facesleuth else 224
+                'total_vector_dim': fdim,
             },
-            'training_samples': len(dataset),
+            'training_samples': len(labels_list),
             'emotion_distribution': emotion_counts,
             'data_root': str(data_root),
             'epochs': epochs,
@@ -588,8 +625,12 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
                 'vertical_bias': use_facesleuth,
                 'au_boosting': use_facesleuth,
                 'enhanced_features': use_facesleuth
-            }
+            },
         }
+        if uar is not None:
+            metadata['uar'] = uar
+            metadata['happiness_recall'] = happiness_recall
+            metadata['per_class_recall'] = per_class_recall
         
         metadata_path = save_dir / f"real_data_model_metadata_{timestamp}.json"
         with open(metadata_path, 'w') as f:
@@ -604,7 +645,7 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
     
     print("\n🎉 FACESELEUTH TRAINING COMPLETE!")
     print("=" * 60)
-    print(f"📊 FaceSleuth model trained on {len(dataset)} real CASME-II samples")
+    print(f"📊 FaceSleuth model trained on {len(labels_list)} real CASME-II samples")
     print(f"🎯 LOSO Accuracy: {mean_loso_accuracy:.3f} ({mean_loso_accuracy*100:.1f}%) ± {std_loso_accuracy:.3f}")
     print(f"🔬 FaceSleuth Innovations: {'ENABLED' if use_facesleuth else 'DISABLED'}")
     print(f"📊 Vertical Bias: α={vertical_alpha}")
@@ -616,7 +657,7 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
         print(f"   • Vertical Motion Bias (α={vertical_alpha})")
         print(f"   • AU-aligned Strain Statistics")
         print(f"   • FaceSleuth Vertical Features (4D)")
-        print(f"   • Enhanced Feature Vector (228D)")
+        print(f"   • Enhanced Feature Vector (232D)")
         print(f"   • AU Soft Boosting Ready")
         
     print(f"\n📊 SCIENTIFIC STATUS:")
@@ -624,16 +665,8 @@ def train_with_real_data(data_root: str, model_save_dir: str = "models", epochs:
     print(f"   ✅ Training methodology: VALIDATED")
     print(f"   ✅ Real data integration: SUCCESSFUL")
     print(f"   ✅ LOSO evaluation: IMPLEMENTED")
-    print(f"   ✅ Feature dimension: 228D (CORRECTED)")
-    print(f"   ⚠️  Performance evaluation: REQUIRES REAL OPTICAL FLOW")
-    print(f"   ⚠️  Current results: METHODOLOGY VALIDATION ONLY")
-    print(f"   🎯 Ready for real optical flow computation")
-        
-    print(f"\n💡 NEXT STEPS FOR FULL EVALUATION:")
-    print(f"   1. Implement real optical flow computation")
-    print(f"   2. Replace synthetic flow with real CASME-II flow")
-    print(f"   3. Run complete performance evaluation")
-    print(f"   4. Generate publication-ready results")
+    print(f"   ✅ Feature dimension: 232D")
+    print(f"   ✅ Optical flow tensors computed from labeled onset/apex/offset frames")
         
     print(f"\n🔬 CURRENT CAPABILITIES:")
     print(f"   ✅ Complete FaceSleuth algorithm implementation")
